@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.3.0
+// @version      1.4.0
 // @description  求职工具！Yangshengzhou开发用于提高BOSS直聘投递效率，批量沟通，高效求职。安装后打开 BOSS 直聘「职位」页使用
 // @author       Yangshengzhou
 // @match        https://www.zhipin.com/*
@@ -472,6 +472,7 @@
           else this._hideSettingsPanel(true);
         }
       }, true);
+      setInterval(() => CoarsePreview.poll(), 1500);
       window.addEventListener("resize", () => {
         if (!elements.settingsPanel.hidden && !document.getElementById("zdl-tutorial")) this._positionSettingsPanel();
         if (!elements.accountsPanel.hidden && !document.getElementById("zdl-tutorial")) this._positionSettingsPanel(elements.accountsPanel);
@@ -897,7 +898,7 @@
       elements.settingsScroll = document.createElement("div");
       elements.settingsScroll.className = "zdl-scroll-wrap zdl-settings-scroll";
       elements.settingsScroll.append(this._createFilterContainer());
-      panel.append(header, elements.settingsScroll, this._createConfigControls());
+      panel.append(header, CoarsePreview.create(), elements.settingsScroll, this._createConfigControls());
       return panel;
     },
 
@@ -1004,6 +1005,7 @@
       this._hideAccountsPanel();
       if (!keepHistory) document.getElementById("zdl-history-panel")?.remove();
       elements.settingsPanel.hidden = false;
+      CoarsePreview.render();
       this._positionSettingsPanel();
     },
 
@@ -1627,6 +1629,7 @@
         invalidateConfigUndo();
         localStorage.setItem("salaryFilter", JSON.stringify(state.salaryFilter));
         this._refreshFilterCounts();
+        CoarsePreview.schedule();
       };
       minInput.addEventListener("change", saveSalary);
       maxInput.addEventListener("change", saveSalary);
@@ -2405,6 +2408,7 @@
       const tagEl = createTagElement(tag, i, tags, container, tagType, editIndex);
       container.appendChild(tagEl);
     });
+    CoarsePreview.schedule();
   }
 
   function createTagElement(text, index, tags, container, tagType = "", editIndex) {
@@ -2516,20 +2520,42 @@
     return (min === null || parsed.max >= min) && (max === null || parsed.min <= max);
   }
 
-  // 粗筛：返回不收集的原因，空字符串表示通过。
-  function coarseRejectReason(info, contacted) {
-    if (info.jobId && contacted?.has(info.jobId)) return "contacted";
-    if (info.headhunter) return "headhunter";
+  // 粗筛：返回不收集的原因（reason 为空表示通过）和给人看的说明。预览和实际投递共用这一份判断。
+  function coarseExplain(info, contacted) {
+    if (info.jobId && contacted?.has(info.jobId)) return { reason: "contacted", label: "已沟通过" };
+    if (info.headhunter) return { reason: "headhunter", label: "猎头岗位" };
     const title = info.title.toLowerCase();
     const company = info.company.toLowerCase();
     const address = info.address.toLowerCase();
-    if (state.blockedCompanies.some((kw) => matchKeyword(company, kw))) return "company";
-    if (state.coarseBlockedTags.some((kw) => matchKeyword(title, kw))) return "blocked";
-    if (!state.coarseRequiredTags.every((kw) => matchKeyword(title, kw))) return "required";
-    if (state.includeTags.length && !state.includeTags.some((kw) => matchKeyword(title, kw))) return "optional";
-    if (state.locationTags.length && !state.locationTags.some((kw) => matchKeyword(address, kw))) return "location";
-    if (!salaryMatches(info.salary)) return "salary";
-    return "";
+    let kw = state.blockedCompanies.find((k) => matchKeyword(company, k));
+    if (kw) return { reason: "company", label: `排除公司"${kw}"` };
+    kw = state.coarseBlockedTags.find((k) => matchKeyword(title, k));
+    if (kw) return { reason: "blocked", label: `职位名排除"${kw}"` };
+    kw = state.coarseRequiredTags.find((k) => !matchKeyword(title, k));
+    if (kw) return { reason: "required", label: `缺少必须词"${kw}"` };
+    if (state.includeTags.length && !state.includeTags.some((k) => matchKeyword(title, k))) {
+      return { reason: "optional", label: "未命中任一包含词" };
+    }
+    if (state.locationTags.length && !state.locationTags.some((k) => matchKeyword(address, k))) {
+      return { reason: "location", label: "工作地不符" };
+    }
+    if (!salaryMatches(info.salary)) return { reason: "salary", label: "薪资不符" };
+    return { reason: "", label: "" };
+  }
+
+  function coarseRejectReason(info, contacted) {
+    return coarseExplain(info, contacted).reason;
+  }
+
+  // 截取关键词命中处前后的一小段原文，命中部分用「」标出，方便在日志里核对误伤。
+  function keywordSnippet(text, keyword, radius = 10) {
+    const match = keywordRegex(keyword).exec(text);
+    if (!match) return "";
+    const start = Math.max(0, match.index - radius);
+    const end = Math.min(text.length, match.index + match[0].length + radius);
+    const before = text.slice(start, match.index).trimStart();
+    const after = text.slice(match.index + match[0].length, end).trimEnd();
+    return `${start > 0 ? "…" : ""}${before}「${match[0]}」${after}${end < text.length ? "…" : ""}`;
   }
 
   const NOT_DETAIL = "li.job-card-box, #boss-pro-panel, .zdl-settings-panel, .zdl-history-panel";
@@ -2549,6 +2575,186 @@
     document.querySelectorAll(".zdl-current-card").forEach((el) => el.classList.remove("zdl-current-card"));
     card?.classList.add("zdl-current-card");
   }
+
+  // 筛选设置里的实时预览：用当前页已加载的岗位卡片试跑粗筛，不点开岗位、不消耗投递次数。
+  const CoarsePreview = {
+    root: null,
+    summaryEl: null,
+    warnEl: null,
+    detailEl: null,
+    toggleBtn: null,
+    isOpen: false,
+    timer: 0,
+    cardCount: -1,
+
+    create() {
+      const root = document.createElement("div");
+      root.className = "zdl-preview";
+      const head = document.createElement("div");
+      head.className = "zdl-preview-head";
+      this.summaryEl = document.createElement("span");
+      this.summaryEl.className = "zdl-preview-summary";
+      this.summaryEl.setAttribute("aria-live", "polite");
+      this.toggleBtn = document.createElement("button");
+      this.toggleBtn.type = "button";
+      this.toggleBtn.className = "zdl-preview-toggle";
+      this.toggleBtn.setAttribute("aria-expanded", "false");
+      this.toggleBtn.addEventListener("click", () => {
+        this.isOpen = !this.isOpen;
+        this.render();
+      });
+      head.append(this.summaryEl, this.toggleBtn);
+      this.warnEl = document.createElement("div");
+      this.warnEl.className = "zdl-preview-warn";
+      this.detailEl = document.createElement("div");
+      this.detailEl.className = "zdl-preview-detail";
+      root.append(head, this.warnEl, this.detailEl);
+      this.root = root;
+      return root;
+    },
+
+    schedule() {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.render(), 60);
+    },
+
+    // 当前页卡片数变化（用户滚动加载、换搜索词）时刷新
+    poll() {
+      if (!this.root || elements.settingsPanel?.hidden) return;
+      const count = document.querySelectorAll("li.job-card-box").length;
+      if (count !== this.cardCount) this.render();
+    },
+
+    compute() {
+      const contacted = state.account.id ? ContactedJobs.setFor(state.account.id) : new Set();
+      const rows = Array.from(document.querySelectorAll("li.job-card-box")).map((card) => {
+        const info = readCardInfo(card);
+        return { card, info, ...coarseExplain(info, contacted) };
+      });
+      const title = (row) => row.info.title.toLowerCase();
+      // “想要的岗位”：职位名满足你写的必须词和包含词。排除词挡掉这些岗位时视为冲突。
+      const hasPositive = state.includeTags.length > 0 || state.coarseRequiredTags.length > 0;
+      const wanted = (row) => hasPositive
+        && state.coarseRequiredTags.every((k) => matchKeyword(title(row), k))
+        && (!state.includeTags.length || state.includeTags.some((k) => matchKeyword(title(row), k)));
+      const fields = { title, company: (row) => row.info.company.toLowerCase(), address: (row) => row.info.address.toLowerCase() };
+      const tagStats = (tags, field, checkConflict = false) => tags.map((kw) => {
+        const hits = rows.filter((row) => matchKeyword(fields[field](row), kw));
+        const conflicts = checkConflict ? hits.filter(wanted) : [];
+        return { kw, hits: hits.length, conflicts };
+      });
+      return {
+        rows,
+        lists: [
+          { el: elements.coarseRequiredTagList, stats: tagStats(state.coarseRequiredTags, "title"), what: "职位名" },
+          { el: elements.includeTagList, stats: tagStats(state.includeTags, "title"), what: "职位名" },
+          { el: elements.coarseBlockedTagList, stats: tagStats(state.coarseBlockedTags, "title", true), what: "职位名" },
+          { el: elements.locationTagList, stats: tagStats(state.locationTags, "address"), what: "工作地" },
+          { el: elements.blockedCompanyTagList, stats: tagStats(state.blockedCompanies, "company"), what: "公司名" },
+        ],
+      };
+    },
+
+    render() {
+      if (!this.root) return;
+      clearTimeout(this.timer);
+      const { rows, lists } = this.compute();
+      this.cardCount = rows.length;
+      this._renderTagBadges(rows.length ? lists : []);
+      this.toggleBtn.hidden = !rows.length;
+      this.toggleBtn.textContent = this.isOpen ? "收起明细" : "明细";
+      this.toggleBtn.setAttribute("aria-expanded", String(this.isOpen));
+
+      if (!rows.length) {
+        this.summaryEl.textContent = isJobsPage()
+          ? "当前页还没有岗位，在 BOSS 上搜索或往下滚动加载后，这里会预览筛选结果"
+          : "到「职位」页后，这里会用当前页的岗位预览筛选结果";
+        this.warnEl.replaceChildren();
+        this.detailEl.replaceChildren();
+        return;
+      }
+
+      const collected = rows.filter((row) => !row.reason);
+      const contactedCount = rows.filter((row) => row.reason === "contacted").length;
+      this.summaryEl.innerHTML = "";
+      this.summaryEl.append(
+        `当前页 ${rows.length} 个岗位，会收集 `,
+        Object.assign(document.createElement("strong"), { textContent: String(collected.length) }),
+        ` 个${contactedCount ? `（另有 ${contactedCount} 个已沟通过）` : ""}`,
+      );
+
+      const conflicts = lists[2].stats.filter((stat) => stat.conflicts.length);
+      this.warnEl.replaceChildren(...conflicts.map((stat) => {
+        const line = document.createElement("div");
+        line.textContent = `排除词“${stat.kw}”挡掉了 ${stat.conflicts.length} 个命中包含词的岗位，例如「${stat.conflicts[0].info.title}」`;
+        return line;
+      }));
+
+      this.detailEl.hidden = !this.isOpen;
+      if (this.isOpen) this._renderDetail(rows);
+    },
+
+    _renderTagBadges(lists) {
+      [elements.coarseRequiredTagList, elements.includeTagList, elements.coarseBlockedTagList,
+        elements.locationTagList, elements.blockedCompanyTagList].forEach((el) => {
+        el?.querySelectorAll(".zdl-tag-hit").forEach((badge) => badge.remove());
+        el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.removeAttribute("title"); });
+      });
+      lists.forEach(({ el, stats, what }) => {
+        if (!el) return;
+        el.querySelectorAll(".zdl-tag").forEach((tag) => {
+          const stat = stats[Number(tag.dataset.index)];
+          if (!stat) return;
+          const badge = document.createElement("span");
+          badge.className = "zdl-tag-hit" + (stat.hits ? "" : " zero");
+          badge.textContent = String(stat.hits);
+          tag.insertBefore(badge, tag.querySelector(".zdl-tag-remove"));
+          let tip = `当前页${what}命中 ${stat.hits} 个岗位`;
+          if (stat.conflicts.length) {
+            tag.classList.add("conflict");
+            tip += `；其中 ${stat.conflicts.length} 个也命中包含词，例如：${stat.conflicts.slice(0, 3).map((row) => row.info.title).join("、")}`;
+          }
+          tag.title = tip;
+        });
+      });
+    },
+
+    _renderDetail(rows) {
+      const counts = {};
+      rows.forEach((row) => { if (row.reason) counts[row.label] = (counts[row.label] || 0) + 1; });
+      const reasons = document.createElement("div");
+      reasons.className = "zdl-preview-reasons";
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      reasons.textContent = top.length ? `排除原因：${top.map(([label, n]) => `${label} ${n}`).join(" · ")}` : "当前页岗位全部会被收集";
+      const list = document.createElement("div");
+      list.className = "zdl-preview-list";
+      // 会收集的排在前面，其余按原因分组
+      const sorted = [...rows].sort((a, b) => Number(!!a.reason) - Number(!!b.reason) || a.label.localeCompare(b.label));
+      sorted.forEach((row) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "zdl-preview-row";
+        item.title = "在页面上定位这个岗位";
+        const name = document.createElement("span");
+        name.className = "zdl-preview-title";
+        name.textContent = row.info.title || "（无职位名）";
+        const company = document.createElement("span");
+        company.className = "zdl-preview-company";
+        company.textContent = row.info.company;
+        const status = document.createElement("span");
+        status.className = "zdl-preview-status" + (row.reason ? "" : " ok");
+        status.textContent = row.reason ? row.label : "会收集";
+        item.append(name, company, status);
+        item.addEventListener("click", () => {
+          row.card.scrollIntoView({ behavior: "smooth", block: "center" });
+          row.card.classList.add("zdl-preview-flash");
+          setTimeout(() => row.card.classList.remove("zdl-preview-flash"), 1600);
+        });
+        list.appendChild(item);
+      });
+      this.detailEl.replaceChildren(reasons, list);
+    },
+  };
 
   const Core = {
     async startProcessing(run) {
@@ -2733,19 +2939,26 @@
 
       let matchReason = "";
       if (state.detailBlockedTags.length || state.detailRequiredTags.length || state.detailOptionalTags.length || state.recruiterBlockedTags.length) {
-        const descText = cleanDesc(document.querySelector(".job-detail-body .desc")).toLowerCase();
+        // 判断用小写文本，日志片段从原文截取（关键词正则不区分大小写，命中位置一致）
+        const descRaw = cleanDesc(document.querySelector(".job-detail-body .desc"));
+        const descText = descRaw.toLowerCase();
+        const quote = (text, kw) => {
+          const snippet = keywordSnippet(text, kw);
+          return snippet ? `（${snippet}）` : "";
+        };
 
         // 排除词：只匹配职位描述
         const hitBlocked = state.detailBlockedTags.find((kw) => matchKeyword(descText, kw));
-        if (hitBlocked) return skip(`命中排除词"${hitBlocked}"`, `详情排除"${hitBlocked}"`);
+        if (hitBlocked) return skip(`命中排除词"${hitBlocked}"${quote(descRaw, hitBlocked)}`, `详情排除"${hitBlocked}"`);
 
         // 必须/任一：匹配职位描述、职位标签和职位名，只在详情区域内取，避免左侧列表干扰
         if (state.detailRequiredTags.length || state.detailOptionalTags.length) {
           const root = getDetailRoot();
           const join = (selector) => Array.from(root.querySelectorAll(selector))
-            .map((li) => li.textContent.trim().toLowerCase()).join(" ");
-          const jobName = (findInDetail(".job-name")?.textContent || "").toLowerCase();
-          const wideText = [join(".job-label-list li"), descText, jobName, join(".tag-list li")].join(" ");
+            .map((li) => li.textContent.trim()).join(" ");
+          const jobName = findInDetail(".job-name")?.textContent?.trim() || "";
+          const wideRaw = [descRaw, join(".job-label-list li"), jobName, join(".tag-list li")].filter(Boolean).join(" ");
+          const wideText = wideRaw.toLowerCase();
 
           const missedRequired = state.detailRequiredTags.find((kw) => !matchKeyword(wideText, kw));
           if (missedRequired) return skip(`缺少必须词"${missedRequired}"`, `缺少"${missedRequired}"`);
@@ -2754,14 +2967,14 @@
           if (state.detailOptionalTags.length) {
             const matchedOptional = state.detailOptionalTags.filter((kw) => matchKeyword(wideText, kw));
             if (!matchedOptional.length) return skip("详情没有命中任一关键词");
-            matchReason = (matchReason ? matchReason + "；" : "") + `任一"${matchedOptional.join("、")}"`;
+            matchReason = (matchReason ? matchReason + "；" : "") + `任一"${matchedOptional.join("、")}"${quote(wideRaw, matchedOptional[0])}`;
           }
         }
 
         if (state.recruiterBlockedTags.length) {
-          const bossText = (findInDetail(".boss-info-attr")?.textContent || "").trim().toLowerCase();
-          const hitRecruiter = state.recruiterBlockedTags.find((kw) => matchKeyword(bossText, kw));
-          if (hitRecruiter) return skip(`招聘者职位命中"${hitRecruiter}"`, `招聘者职位"${hitRecruiter}"`);
+          const bossRaw = (findInDetail(".boss-info-attr")?.textContent || "").replace(/\s+/g, " ").trim();
+          const hitRecruiter = state.recruiterBlockedTags.find((kw) => matchKeyword(bossRaw.toLowerCase(), kw));
+          if (hitRecruiter) return skip(`招聘者职位命中"${hitRecruiter}"${quote(bossRaw, hitRecruiter)}`, `招聘者职位"${hitRecruiter}"`);
         }
       }
 
@@ -2939,6 +3152,7 @@
       const html = logEntry
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         .replace(/^\[([^\]]+)\]/, '<span class="zdl-log-time">$1</span>')
+        .replace(/「([^」]{1,60})」/g, '<mark class="zdl-log-hit">$1</mark>')
         .replace(/已投递/g, '<span class="zdl-log-ok">已投递</span>')
         .replace(/已跳过/g, '<span class="zdl-log-skip">已跳过</span>');
       item.innerHTML = html;
@@ -3211,6 +3425,30 @@
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
 .zdl-tag-hint{flex-basis:100%;margin:0;color:#98a4b5;font-size:11px;line-height:1.6}
 .zdl-tag-hint.warn{color:#b45309}
+.zdl-preview{flex-shrink:0;margin:0 0 12px;padding:9px 11px;border:1px solid var(--zdl-border);border-radius:9px;background:var(--zdl-secondary);color:#53647e;font-size:12px;line-height:1.6}
+.zdl-preview-head{display:flex;align-items:baseline;gap:8px}
+.zdl-preview-summary{flex:1;min-width:0}
+.zdl-preview-summary strong{color:var(--zdl-primary);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
+.zdl-preview-toggle{flex-shrink:0;padding:1px 7px;border:1px solid var(--zdl-border);border-radius:5px;background:#fff;color:var(--zdl-primary);font:inherit;font-size:11px;cursor:pointer}
+.zdl-preview-toggle:hover{border-color:#c3d4f7}
+.zdl-preview-toggle[hidden]{display:none}
+.zdl-preview-warn:not(:empty){margin-top:6px;padding:6px 8px;border-radius:6px;background:#fffbeb;color:#b45309;font-size:11px;line-height:1.6}
+.zdl-preview-warn>div+div{margin-top:3px}
+.zdl-preview-detail[hidden]{display:none}
+.zdl-preview-reasons{margin:8px 0 6px;color:#7b8aa1;font-size:11px;line-height:1.6}
+.zdl-preview-list{max-height:min(150px,22vh);overflow:auto;border-top:1px solid var(--zdl-border);scrollbar-width:thin;scrollbar-color:#c5d1e2 transparent}
+.zdl-preview-row{display:flex;align-items:baseline;gap:8px;width:100%;box-sizing:border-box;padding:5px 4px;border:0;border-bottom:1px solid #e9eef5;background:none;color:inherit;font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.zdl-preview-row:hover{background:#fff}
+.zdl-preview-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--zdl-ink)}
+.zdl-preview-company{flex-shrink:1;max-width:30%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#98a4b5;font-size:11px}
+.zdl-preview-status{flex-shrink:0;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#98a4b5;font-size:11px}
+.zdl-preview-status.ok{color:#16a34a;font-weight:500}
+.zdl-tag-hit{flex-shrink:0;min-width:14px;padding:0 4px;box-sizing:border-box;border-radius:8px;background:rgba(255,255,255,.75);font-size:10px;line-height:1.6;text-align:center;font-variant-numeric:tabular-nums}
+.zdl-tag-hit.zero{opacity:.5}
+.zdl-tag.conflict{box-shadow:inset 0 0 0 1.5px #f59e0b}
+.zdl-tag.conflict .zdl-tag-hit{background:#fef3c7;color:#b45309;opacity:1}
+li.job-card-box.zdl-preview-flash{outline:2px solid #f59e0b;outline-offset:-2px;border-radius:12px}
+.zdl-log-hit{padding:0 2px;border-radius:3px;background:#fef3c7;color:#92400e}
 .zdl-panel.zdl-panel-hidden{opacity:0;transform:scale(.06);pointer-events:none}
 .zdl-mini-icon:hover{transform:scale(1.08);box-shadow:0 8px 20px rgba(var(--zdl-primary-rgb),.5)}
 .zdl-mini-icon:focus-visible{outline:2px solid #a6c0f7;outline-offset:3px}
