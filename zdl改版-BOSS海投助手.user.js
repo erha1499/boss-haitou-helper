@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.5.0
+// @version      1.6.0
 // @description  求职工具！Yangshengzhou开发用于提高BOSS直聘投递效率，批量沟通，高效求职。安装后打开 BOSS 直聘「职位」页使用
 // @author       Yangshengzhou
 // @match        https://www.zhipin.com/*
@@ -514,9 +514,9 @@
       const steps = [
         { title: "固定面板", text: "固定后，点击页面也不会收起。", target: () => elements.pinBtn },
         { title: "打开筛选设置", text: "点这里设置岗位条件。", target: () => elements.settingsBtn },
-        { title: "添加职位关键词", text: "职位名「必须包含」要全部命中，「包含任一」命中一个即可。", settings: true, section: 0, target: () => sectionButton(elements.coarseRequiredInput) },
-        { title: "排除不想要的岗位", text: "职位详情命中排除词，就会跳过。", settings: true, section: 1, target: () => sectionButton(elements.detailBlockedInput) },
-        { title: "筛选招聘者", text: "勾选你接受的活跃状态。", settings: true, section: 2, target: () => settingsPanel.querySelector(".zdl-status-chip") },
+        { title: "添加职位关键词", text: "职位名「必须包含」要全部命中，「包含任一」命中一个即可。", settings: true, section: 1, target: () => sectionButton(elements.coarseRequiredInput) },
+        { title: "排除不想要的岗位", text: "职位详情命中排除词，就会跳过。", settings: true, section: 2, target: () => sectionButton(elements.detailBlockedInput) },
+        { title: "筛选招聘者", text: "勾选你接受的活跃状态。", settings: true, section: 3, target: () => settingsPanel.querySelector("#recruiter-status-select .zdl-status-chip") },
         { title: "设置今日目标", text: "填今天累计要投多少次。", target: () => elements.targetInput },
         { title: "复制或导入配置", text: "复制配置分享给别人，对方导入后即可使用。", settings: true, target: () => settingsPanel.querySelector(".zdl-config-buttons") },
         { title: "准备好再启动", text: "点“启动”开始投递；教程不会代你点击。", target: () => elements.controlBtn },
@@ -1316,6 +1316,9 @@
       const salaryActive = () => (state.salaryFilter.type !== "none" && !!(state.salaryFilter.min || state.salaryFilter.max))
         || state.salaryFilter.negotiable === false;
       container.append(
+        this._createCollapsibleSection("岗位类型与经验", "综合标签、职位名和详情判断", [
+          this._createJobTypeSection(),
+        ], () => (jobTypeFilterActive() ? 1 : 0)),
         this._createCollapsibleSection("职位列表粗筛", "看职位名、地点、公司、薪资", [
           coarseRequiredResult.section,
           includeResult.section,
@@ -1338,6 +1341,65 @@
       );
 
       return container;
+    },
+
+    _createJobTypeSection() {
+      const section = document.createElement("div");
+      const save = () => {
+        invalidateConfigUndo();
+        localStorage.setItem("zdlJobTypeFilter", JSON.stringify(state.jobTypeFilter));
+        yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
+        this._refreshFilterCounts();
+        CoarsePreview.schedule();
+      };
+      const chipRow = (options, list) => {
+        const row = document.createElement("div");
+        row.className = "zdl-status-tags";
+        options.forEach(([key, label]) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "zdl-status-chip";
+          chip.dataset.value = key;
+          const check = document.createElement("span");
+          check.className = "zdl-status-check";
+          check.setAttribute("aria-hidden", "true");
+          chip.append(check, label);
+          const render = () => {
+            const on = state.jobTypeFilter[list].includes(key);
+            chip.classList.toggle("active", on);
+            chip.setAttribute("aria-pressed", String(on));
+          };
+          chip.addEventListener("click", () => {
+            const values = state.jobTypeFilter[list];
+            const idx = values.indexOf(key);
+            if (idx >= 0) values.splice(idx, 1);
+            else values.push(key);
+            state.jobTypeFilter = normalizeJobTypeFilter(state.jobTypeFilter);
+            render();
+            save();
+          });
+          render();
+          row.appendChild(chip);
+        });
+        return row;
+      };
+      const make = (title, desc, options, list) => {
+        const wrap = document.createElement("div");
+        wrap.className = "zdl-tag-section";
+        const row = document.createElement("div");
+        row.className = "zdl-tag-row";
+        row.append(this._createFilterLabel(title, desc), chipRow(options, list));
+        wrap.appendChild(row);
+        return wrap;
+      };
+      const typesSection = make("岗位类型", "取消勾选的类型不投", JOB_TYPES, "types");
+      const yearsSection = make("社招经验要求", "按岗位要求的最低年限", JOB_YEARS, "years");
+      yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
+      const note = document.createElement("p");
+      note.className = "zdl-tag-hint zdl-jobtype-note";
+      note.textContent = "实习岗常被标成“在校/应届”，脚本会按实习处理；详情里写明“要求 N 年以上工作经验”时，按社招 N 年处理。卡片看不出来的，打开详情后再判断。";
+      section.append(typesSection, yearsSection, note);
+      return section;
     },
 
     _createFilterLabel(title, desc = "") {
@@ -2241,9 +2303,9 @@
   };
 
   const CONFIG_UNDO_KEY = "zdlConfigUndoV1";
-  const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus"];
+  const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter"];
   const CONFIG_FIELD_LABELS = {
-    targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态",
+    targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型",
     includeTags: "职位可选词", locationTags: "工作地", detailBlockedTags: "详情禁止词",
     detailRequiredTags: "详情必须词", detailOptionalTags: "详情可选词", recruiterIncludeTags: "只投招聘者",
     blockedCompanies: "不收集的公司", coarseBlockedTags: "职位禁止词", coarseRequiredTags: "职位必须词",
@@ -2256,6 +2318,7 @@
       targetCount: state.targetCount,
       salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max, negotiable: state.salaryFilter.negotiable !== false },
       recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
+      jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years] },
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
     return config;
@@ -2294,6 +2357,11 @@
       || (salary.negotiable !== undefined && typeof salary.negotiable !== "boolean")) {
       throw new Error("薪资配置无效，请检查薪资类型和上下限。");
     }
+    const jobType = config.jobTypeFilter;
+    const validKeys = (list, all) => Array.isArray(list) && list.every((k) => all.some(([key]) => key === k));
+    if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS))) {
+      throw new Error("岗位类型配置无效。");
+    }
     const activityOptions = RECRUITER_STATUS_OPTIONS;
     if (!Array.isArray(config.recruiterActivityStatus)
       || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
@@ -2307,6 +2375,7 @@
       targetCount: config.targetCount,
       salaryFilter: { type: salaryType, min: salaryMin, max: salaryMax, negotiable: salary.negotiable !== false },
       recruiterActivityStatus: [...config.recruiterActivityStatus],
+      jobTypeFilter: normalizeJobTypeFilter(jobType),
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { normalized[key] = [...config[key]]; });
     return normalized;
@@ -2319,6 +2388,12 @@
         : value.type === "atMost" && value.max ? `${value.max}K 以下`
         : value.type === "range" && (value.min || value.max) ? `${value.min || "不限"} ~ ${value.max || "不限"}K` : "不限";
       return `${range}，${value.negotiable === false ? "不含" : "含"}面议`;
+    }
+    if (key === "jobTypeFilter") {
+      const types = value.types.length === JOB_TYPES.length ? "全部类型" : value.types.map((k) => JOB_TYPE_LABEL[k]).join("、") || "不投任何类型";
+      const years = value.types.includes("social") && value.years.length < JOB_YEARS.length
+        ? `；社招 ${value.years.map((k) => JOB_YEARS_LABEL[k]).join("、") || "不投"}` : "";
+      return types + years;
     }
     if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
     return value.join("、");
@@ -2336,6 +2411,7 @@
     values.zdlTargetCount = String(config.targetCount);
     values.salaryFilter = JSON.stringify(config.salaryFilter);
     values.recruiterActivityStatus = JSON.stringify(config.recruiterActivityStatus);
+    values.zdlJobTypeFilter = JSON.stringify(config.jobTypeFilter);
     return values;
   }
 
@@ -2373,6 +2449,7 @@
     Object.assign(state.salaryFilter, config.salaryFilter);
     state.settings.recruiterActivityStatus.splice(0);
     config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
+    state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);
   }
 
   function importConfig(jsonText) {
@@ -2536,6 +2613,7 @@
       salary: decodeSalary(card.querySelector(".job-salary")?.textContent?.trim() || ""),
       logo: card.querySelector(".boss-logo img")?.src || "",
       headhunter: (card.querySelector(".job-tag-icon")?.alt || "").includes("猎头"),
+      tags: Array.from(card.querySelectorAll(".tag-list li"), (li) => li.textContent.trim()).filter(Boolean),
     };
   }
 
@@ -2574,6 +2652,8 @@
     if (!salaryMatches(info.salary)) {
       return { reason: "salary", label: isNegotiableSalary(info.salary) ? "薪资面议" : "薪资不符" };
     }
+    const jobType = coarseJobTypeReject(info);
+    if (jobType) return { reason: "jobtype", label: `经验要求"${JOB_YEARS_LABEL[jobType.bucket]}"` };
     return { reason: "", label: "" };
   }
 
@@ -2590,6 +2670,147 @@
     const before = text.slice(start, match.index).trimStart();
     const after = text.slice(match.index + match[0].length, end).trimEnd();
     return `${start > 0 ? "…" : ""}${before}「${match[0]}」${after}${end < text.length ? "…" : ""}`;
+  }
+
+  // ---------- 岗位类型与经验 ----------
+  // BOSS 的经验标签只有“在校生/应届生/经验不限/1年以内/1-3年/…”，没有“实习”，
+  // 所以综合卡片标签、职位名和职位描述来判断。
+  const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["any", "经验不限"], ["social", "社招"], ["unknown", "未标明"]];
+  const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
+  const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
+  const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
+  const defaultJobTypeFilter = () => ({ types: JOB_TYPES.map(([k]) => k), years: JOB_YEARS.map(([k]) => k) });
+
+  function normalizeJobTypeFilter(value) {
+    const pick = (list, all) => Array.isArray(list) ? all.map(([k]) => k).filter((k) => list.includes(k)) : all.map(([k]) => k);
+    return { types: pick(value?.types, JOB_TYPES), years: pick(value?.years, JOB_YEARS) };
+  }
+
+  const jobTypeFilterActive = () => state.jobTypeFilter.types.length < JOB_TYPES.length
+    || (state.jobTypeFilter.types.includes("social") && state.jobTypeFilter.years.length < JOB_YEARS.length);
+
+  const CN_DIGITS = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  function parseYearNumber(text) {
+    if (/^\d+$/.test(text)) return Number(text);
+    if (text.length === 1) return CN_DIGITS[text] ?? NaN;
+    if (text[0] === "十") return 10 + (CN_DIGITS[text[1]] ?? NaN);
+    if (text[1] === "十") return (CN_DIGITS[text[0]] ?? NaN) * 10;
+    return NaN;
+  }
+  const yearsBucket = (n) => (n < 1 ? "y0_1" : n < 3 ? "y1_3" : n < 5 ? "y3_5" : "y5p");
+
+  // 命中位置前面紧挨着否定词时不算，比如“不接受实习生”“非应届”
+  const isNegated = (text, index) => /(不接受|不招|不要|不考虑|不需要|无需|不是|非)$/.test(text.slice(Math.max(0, index - 4), index));
+  function findSignal(text, regex) {
+    regex.lastIndex = 0;
+    let match;
+    while ((match = regex.exec(text))) {
+      if (!isNegated(text, match.index)) return match;
+    }
+    return null;
+  }
+
+  const JT_TITLE_INTERN = /实习|intern/gi;
+  const JT_CAMPUS = /应届(?:毕业)?生?|校园招聘|校招|秋招|春招|管培生?|(?<!\d)(?:20)?\d{2}\s*届/g;
+  const JT_DESC_INTERN = /实习(?:期|生|岗|时长|周期)|(?:每周|一周)(?:至少|不少于)?\s*[\d一二三四五六]\s*天|可转正|转正机会/g;
+  const JT_SOCIAL = /社招|社会招聘/g;
+  const JT_ANY = /(?:工作)?经验不限|无需(?:工作)?经验|不限(?:工作)?经验|无(?:工作)?经验要求/g;
+  // “3年以上Java开发经验”“1-3年工作经验”“两年及以上相关经验”；“1年以上实习经验”不算
+  const JT_YEARS = /(?<![\d.])(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*(?:[-~～至到]\s*(?:\d{1,2}|[一二两三四五六七八九十]{1,2})\s*)?年(?:及|或)?(以上|以下|以内)?(?:的)?([^，,。；;！!、\n]{0,10}?)经验/g;
+  const JT_YEARS_AFTER = /经验\s*(\d{1,2}|[一二两三四五六七八九十]{1,2})\s*年(?:及|或)?以上/g;
+
+  function snippetAt(text, index, length, radius = 10) {
+    const start = Math.max(0, index - radius);
+    const end = Math.min(text.length, index + length + radius);
+    return `${start > 0 ? "…" : ""}${text.slice(start, index).trimStart()}「${text.slice(index, index + length)}」`
+      + `${text.slice(index + length, end).trimEnd()}${end < text.length ? "…" : ""}`;
+  }
+
+  function descYearsRequirement(desc) {
+    let best = null;
+    const consider = (n, match, upperBound) => {
+      if (!Number.isFinite(n) || n > 15) return;
+      if (upperBound) {
+        if (n > 1) return; // “3年以下经验”只是上限，不当作硬性要求
+        n = 0;
+      }
+      if (!best || n > best.years) best = { years: n, evidence: `详情：${snippetAt(desc, match.index, match[0].length)}` };
+    };
+    JT_YEARS.lastIndex = 0;
+    let match;
+    while ((match = JT_YEARS.exec(desc))) {
+      if (isNegated(desc, match.index) || /实习|在校|校园/.test(match[3] || "")) continue;
+      consider(parseYearNumber(match[1]), match, match[2] === "以下" || match[2] === "以内");
+    }
+    JT_YEARS_AFTER.lastIndex = 0;
+    while ((match = JT_YEARS_AFTER.exec(desc))) {
+      if (!isNegated(desc, match.index)) consider(parseYearNumber(match[1]), match, false);
+    }
+    return best;
+  }
+
+  // 返回 { kind: "years" | "soft" | "unknown", label, evidence, bucket?, types? }
+  // years：写明了年限要求，属于硬性条件；soft：实习/校招/经验不限/社招等类型信号，命中任一勾选项即可。
+  function classifyJob({ title = "", tags = [], desc = "" }) {
+    const soft = new Map();
+    const addSoft = (type, evidence) => { if (!soft.has(type)) soft.set(type, evidence); };
+    let cardYears = null;
+    tags.map((t) => t.trim()).forEach((tag) => {
+      if (/^(在校|应届|在校\/应届|在校生|应届生|应届毕业生)$/.test(tag)) addSoft("campus", `标签「${tag}」`);
+      else if (tag === "经验不限") addSoft("any", `标签「${tag}」`);
+      else if (/^\d+天\/周$|^\d+个月$/.test(tag)) addSoft("intern", `标签「${tag}」`);
+      else if (/^1年以[内下]$/.test(tag)) cardYears = { years: 0, evidence: `标签「${tag}」` };
+      else {
+        const m = tag.match(/^(\d+)\s*-\s*\d+\s*年$/) || tag.match(/^(\d+)\s*年以上$/);
+        if (m) cardYears = { years: Number(m[1]), evidence: `标签「${tag}」` };
+      }
+    });
+    let m = findSignal(title, JT_TITLE_INTERN);
+    if (m) addSoft("intern", `职位名「${title}」`);
+    m = findSignal(title, JT_CAMPUS);
+    if (m) addSoft("campus", `职位名「${title}」`);
+    let descYears = null;
+    if (desc) {
+      [["intern", JT_DESC_INTERN], ["campus", JT_CAMPUS], ["social", JT_SOCIAL], ["any", JT_ANY]].forEach(([type, regex]) => {
+        const hit = findSignal(desc, regex);
+        if (hit) addSoft(type, `详情：${snippetAt(desc, hit.index, hit[0].length)}`);
+      });
+      descYears = descYearsRequirement(desc);
+    }
+    const internStrong = soft.has("intern");
+    // BOSS 的实习岗经验一栏常写“在校/应届”，有实习信号时按实习处理
+    if (internStrong) soft.delete("campus");
+    // 卡片“1年以内”对实习岗只是默认值，不当作年限要求
+    const hard = [internStrong && cardYears?.years < 1 ? null : cardYears, descYears]
+      .filter(Boolean).sort((a, b) => b.years - a.years)[0];
+    if (hard) {
+      const bucket = yearsBucket(hard.years);
+      return { kind: "years", bucket, label: `社招·${JOB_YEARS_LABEL[bucket]}`, evidence: hard.evidence };
+    }
+    if (soft.size > 1) soft.delete("any");
+    if (soft.size) {
+      const types = [...soft.keys()];
+      return { kind: "soft", types, label: types.map((t) => JOB_TYPE_LABEL[t]).join("/"), evidence: soft.get(types[0]) };
+    }
+    return { kind: "unknown", label: "未标明", evidence: "" };
+  }
+
+  function jobTypeAccepted(result) {
+    const { types, years } = state.jobTypeFilter;
+    if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);
+    if (result.kind === "soft") {
+      return result.types.some((t) => (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
+    }
+    return types.includes("unknown");
+  }
+
+  state.jobTypeFilter = normalizeJobTypeFilter(getStoredJSON("zdlJobTypeFilter", null));
+
+  // 粗筛阶段只能看卡片：只有写明年限且不在范围内才排除，其余留到详情再判断
+  function coarseJobTypeReject(info) {
+    if (!jobTypeFilterActive()) return null;
+    const result = classifyJob({ title: info.title, tags: info.tags });
+    return result.kind === "years" && !jobTypeAccepted(result) ? result : null;
   }
 
   const NOT_DETAIL = "li.job-card-box, #boss-pro-panel, .zdl-settings-panel, .zdl-history-panel";
@@ -2638,11 +2859,13 @@
         this.render();
       });
       head.append(this.summaryEl, this.toggleBtn);
+      this.typesEl = document.createElement("div");
+      this.typesEl.className = "zdl-preview-types";
       this.warnEl = document.createElement("div");
       this.warnEl.className = "zdl-preview-warn";
       this.detailEl = document.createElement("div");
       this.detailEl.className = "zdl-preview-detail";
-      root.append(head, this.warnEl, this.detailEl);
+      root.append(head, this.typesEl, this.warnEl, this.detailEl);
       this.root = root;
       return root;
     },
@@ -2704,6 +2927,7 @@
           ? "当前页还没有岗位，在 BOSS 上搜索或往下滚动加载后，这里会预览筛选结果"
           : "到「职位」页后，这里会用当前页的岗位预览筛选结果";
         this.warnEl.replaceChildren();
+        this.typesEl.textContent = "";
         this.detailEl.replaceChildren();
         return;
       }
@@ -2716,6 +2940,16 @@
         Object.assign(document.createElement("strong"), { textContent: String(collected.length) }),
         ` 个${contactedCount ? `（另有 ${contactedCount} 个已沟通过）` : ""}`,
       );
+
+      // 岗位类型分布（只看卡片和职位名，详情里的信息要打开岗位才知道）
+      const typeCounts = {};
+      rows.forEach((row) => {
+        const result = classifyJob({ title: row.info.title, tags: row.info.tags });
+        const key = result.kind === "years" ? "社招" : result.kind === "soft" ? JOB_TYPE_LABEL[result.types[0]] : "看详情才知道";
+        typeCounts[key] = (typeCounts[key] || 0) + 1;
+      });
+      const order = [...JOB_TYPES.map(([, label]) => label), "看详情才知道"];
+      this.typesEl.textContent = "岗位类型（按卡片）：" + order.filter((k) => typeCounts[k]).map((k) => `${k} ${typeCounts[k]}`).join(" · ");
 
       const conflicts = lists[2].stats.filter((stat) => stat.conflicts.length);
       this.warnEl.replaceChildren(...conflicts.map((stat) => {
@@ -2925,7 +3159,7 @@
           if (reason) return;
           state.jobList.push({
             el: card, jobId: info.jobId, company: info.company, logo: info.logo,
-            job: info.title, salary: info.salary, address: info.address,
+            job: info.title, salary: info.salary, address: info.address, tags: info.tags,
           });
         });
 
@@ -2972,6 +3206,22 @@
       }
 
       let matchReason = "";
+
+      // 岗位类型与经验：加上职位描述后给出最终判断
+      if (jobTypeFilterActive()) {
+        const root = getDetailRoot();
+        const detailTags = root === document ? []
+          : Array.from(root.querySelectorAll(".job-label-list li, .tag-list li"), (li) => li.textContent.trim());
+        const jobType = classifyJob({
+          title: item.job,
+          tags: [...(item.tags || []), ...detailTags],
+          desc: cleanDesc(document.querySelector(".job-detail-body .desc")),
+        });
+        if (!jobTypeAccepted(jobType)) {
+          return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`);
+        }
+        matchReason = `类型"${jobType.label}"`;
+      }
       if (state.detailBlockedTags.length || state.detailRequiredTags.length || state.detailOptionalTags.length) {
         // 判断用小写文本，日志片段从原文截取（关键词正则不区分大小写，命中位置一致）
         const descRaw = cleanDesc(document.querySelector(".job-detail-body .desc"));
@@ -3268,6 +3518,7 @@
         const startTime = new Date();
         Core.log(`开始自动海投，时间：${startTime.toLocaleTimeString()}`);
         const filters = [];
+        if (jobTypeFilterActive()) filters.push(`岗位类型【${formatConfigValue("jobTypeFilter", state.jobTypeFilter)}】`);
         if (state.coarseRequiredTags.length) filters.push(`必须职位【${state.coarseRequiredTags.join("、")}】`);
         if (state.includeTags.length) filters.push(`可选职位【${state.includeTags.join("、")}】`);
         filters.push(`工作地【${state.locationTags.join("、") || "不限"}】`);
@@ -3473,6 +3724,9 @@
 .zdl-preview-toggle{flex-shrink:0;padding:1px 7px;border:1px solid var(--zdl-border);border-radius:5px;background:#fff;color:var(--zdl-primary);font:inherit;font-size:11px;cursor:pointer}
 .zdl-preview-toggle:hover{border-color:#c3d4f7}
 .zdl-preview-toggle[hidden]{display:none}
+.zdl-preview-types{margin-top:3px;color:#7b8aa1;font-size:11px}
+.zdl-preview-types:empty{display:none}
+.zdl-jobtype-note{margin-top:-4px}
 .zdl-preview-warn:not(:empty){margin-top:6px;padding:6px 8px;border-radius:6px;background:#fffbeb;color:#b45309;font-size:11px;line-height:1.6}
 .zdl-preview-warn>div+div{margin-top:3px}
 .zdl-preview-detail[hidden]{display:none}
