@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.4.0
+// @version      1.5.0
 // @description  求职工具！Yangshengzhou开发用于提高BOSS直聘投递效率，批量沟通，高效求职。安装后打开 BOSS 直聘「职位」页使用
 // @author       Yangshengzhou
 // @match        https://www.zhipin.com/*
@@ -53,11 +53,11 @@
 
     includeTags: getStoredJSON("includeTags", []).map((t) => typeof t === "string" ? t : t.text),
     locationTags: getStoredJSON("locationTags", []),
-    salaryFilter: getStoredJSON("salaryFilter", { type: "none", min: "", max: "" }),
+    salaryFilter: { type: "none", min: "", max: "", negotiable: true, ...getStoredJSON("salaryFilter", {}) },
     detailBlockedTags: getStoredJSON("detailBlockedTags", []),
     detailRequiredTags: getStoredJSON("detailRequiredTags", []),
     detailOptionalTags: getStoredJSON("detailOptionalTags", []),
-    recruiterBlockedTags: getStoredJSON("recruiterBlockedTags", []),
+    recruiterIncludeTags: getStoredJSON("zdlRecruiterIncludeTags", []),
     coarseBlockedTags: getStoredJSON("zdlCoarseBlockedTags", []),
     coarseRequiredTags: getStoredJSON("zdlCoarseRequiredTags", []),
 
@@ -98,11 +98,11 @@
     detailBlockedTagList: null,
     detailRequiredTagList: null,
     detailOptionalTagList: null,
-    recruiterBlockedTagList: null,
+    recruiterIncludeTagList: null,
     detailBlockedInput: null,
     detailRequiredInput: null,
     detailOptionalInput: null,
-    recruiterBlockedInput: null,
+    recruiterIncludeInput: null,
     blockedCompanyInput: null,
     blockedCompanyTagList: null,
     coarseBlockedInput: null,
@@ -778,7 +778,7 @@
       renderTagList(elements.detailBlockedTagList, state.detailBlockedTags, "blocked");
       renderTagList(elements.detailRequiredTagList, state.detailRequiredTags, "required");
       renderTagList(elements.detailOptionalTagList, state.detailOptionalTags, "optional");
-      renderTagList(elements.recruiterBlockedTagList, state.recruiterBlockedTags, "blocked");
+      renderTagList(elements.recruiterIncludeTagList, state.recruiterIncludeTags, "optional");
       renderTagList(elements.blockedCompanyTagList, state.blockedCompanies, "blocked");
       renderTagList(elements.coarseBlockedTagList, state.coarseBlockedTags, "blocked");
       renderTagList(elements.coarseRequiredTagList, state.coarseRequiredTags, "required");
@@ -1283,7 +1283,7 @@
       const blockedResult = this._createTagSection("排除", state.detailBlockedTags, "如：社招", "blocked", "详情命中即跳过");
       const requiredResult = this._createTagSection("必须包含", state.detailRequiredTags, "如：Spring", "required", "全部命中才投递");
       const optionalResult = this._createTagSection("包含任一", state.detailOptionalTags, "如：Java", "optional", "命中一个即可");
-      const recruiterResult = this._createTagSection("排除招聘者职位", state.recruiterBlockedTags, "如：工程师", "blocked", "命中即跳过");
+      const recruiterResult = this._createTagSection("只投这些招聘者", state.recruiterIncludeTags, "如：hr*|招聘|人事", "optional", "招聘者职位命中任一才投，留空不限");
 
       const recruiterSection = document.createElement("div");
       recruiterSection.className = "zdl-tag-section";
@@ -1304,8 +1304,8 @@
       elements.detailRequiredTagList = requiredResult.tagList;
       elements.detailOptionalInput = optionalResult.input;
       elements.detailOptionalTagList = optionalResult.tagList;
-      elements.recruiterBlockedInput = recruiterResult.input;
-      elements.recruiterBlockedTagList = recruiterResult.tagList;
+      elements.recruiterIncludeInput = recruiterResult.input;
+      elements.recruiterIncludeTagList = recruiterResult.tagList;
       elements.blockedCompanyInput = blockedCompanyResult.input;
       elements.blockedCompanyTagList = blockedCompanyResult.tagList;
       elements.coarseBlockedInput = coarseBlockedResult.input;
@@ -1313,7 +1313,8 @@
       elements.coarseRequiredInput = coarseRequiredResult.input;
       elements.coarseRequiredTagList = coarseRequiredResult.tagList;
 
-      const salaryActive = () => state.salaryFilter.type !== "none" && !!(state.salaryFilter.min || state.salaryFilter.max);
+      const salaryActive = () => (state.salaryFilter.type !== "none" && !!(state.salaryFilter.min || state.salaryFilter.max))
+        || state.salaryFilter.negotiable === false;
       container.append(
         this._createCollapsibleSection("职位列表粗筛", "看职位名、地点、公司、薪资", [
           coarseRequiredResult.section,
@@ -1332,7 +1333,7 @@
         this._createCollapsibleSection("招聘者筛选", "打开详情后判断", [
           recruiterSection,
           recruiterResult.section,
-        ], () => state.recruiterBlockedTags.length
+        ], () => state.recruiterIncludeTags.length
           + (state.settings.recruiterActivityStatus.length < RECRUITER_STATUS_OPTIONS.length ? 1 : 0))
       );
 
@@ -1611,9 +1612,30 @@
         input.value = Number.isFinite(n) && n > 0 ? String(n) : "";
         return input.value;
       };
+      // 面议岗位是否收集；默认勾选，和以前“面议不拦截”的行为一致
+      const negotiable = document.createElement("button");
+      negotiable.type = "button";
+      negotiable.className = "zdl-status-chip zdl-salary-negotiable";
+      negotiable.title = "勾选后，薪资写着“面议”的岗位也会收集";
+      const negotiableCheck = document.createElement("span");
+      negotiableCheck.className = "zdl-status-check";
+      negotiableCheck.setAttribute("aria-hidden", "true");
+      negotiable.append(negotiableCheck, "可面议");
+      const renderNegotiable = () => {
+        const on = state.salaryFilter.negotiable !== false;
+        negotiable.classList.toggle("active", on);
+        negotiable.setAttribute("aria-pressed", String(on));
+      };
+      negotiable.addEventListener("click", () => {
+        state.salaryFilter.negotiable = state.salaryFilter.negotiable === false;
+        renderNegotiable();
+        saveSalary();
+      });
+
       const renderSummary = (min, max) => {
-        summary.textContent = min && max ? `${min}–${max}K` : min ? `${min}K 以上` : max ? `${max}K 以下` : "不限";
-        summary.classList.toggle("empty", !min && !max);
+        const range = min && max ? `${min}–${max}K` : min ? `${min}K 以上` : max ? `${max}K 以下` : "不限";
+        summary.textContent = state.salaryFilter.negotiable === false ? `${range} · 不含面议` : range;
+        summary.classList.toggle("empty", !min && !max && state.salaryFilter.negotiable !== false);
       };
       const saveSalary = () => {
         let min = clean(minInput), max = clean(maxInput);
@@ -1637,8 +1659,9 @@
         if (e.key === "Enter") input.blur();
       }));
 
+      renderNegotiable();
       renderSummary(minInput.value, maxInput.value);
-      row.append(label, field(minInput), sep, field(maxInput), summary);
+      row.append(label, field(minInput), sep, field(maxInput), negotiable, summary);
       section.appendChild(row);
       return section;
     },
@@ -2199,7 +2222,7 @@
     localStorage.setItem("detailBlockedTags", JSON.stringify(state.detailBlockedTags));
     localStorage.setItem("detailRequiredTags", JSON.stringify(state.detailRequiredTags));
     localStorage.setItem("detailOptionalTags", JSON.stringify(state.detailOptionalTags));
-    localStorage.setItem("recruiterBlockedTags", JSON.stringify(state.recruiterBlockedTags));
+    localStorage.setItem("zdlRecruiterIncludeTags", JSON.stringify(state.recruiterIncludeTags));
     localStorage.setItem("zdlBlockedCompanies", JSON.stringify(state.blockedCompanies));
     localStorage.setItem("zdlCoarseBlockedTags", JSON.stringify(state.coarseBlockedTags));
     localStorage.setItem("zdlCoarseRequiredTags", JSON.stringify(state.coarseRequiredTags));
@@ -2211,7 +2234,7 @@
     detailBlockedTags: "detailBlockedTags",
     detailRequiredTags: "detailRequiredTags",
     detailOptionalTags: "detailOptionalTags",
-    recruiterBlockedTags: "recruiterBlockedTags",
+    recruiterIncludeTags: "zdlRecruiterIncludeTags",
     blockedCompanies: "zdlBlockedCompanies",
     coarseBlockedTags: "zdlCoarseBlockedTags",
     coarseRequiredTags: "zdlCoarseRequiredTags",
@@ -2222,7 +2245,7 @@
   const CONFIG_FIELD_LABELS = {
     targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态",
     includeTags: "职位可选词", locationTags: "工作地", detailBlockedTags: "详情禁止词",
-    detailRequiredTags: "详情必须词", detailOptionalTags: "详情可选词", recruiterBlockedTags: "招聘者职位过滤",
+    detailRequiredTags: "详情必须词", detailOptionalTags: "详情可选词", recruiterIncludeTags: "只投招聘者",
     blockedCompanies: "不收集的公司", coarseBlockedTags: "职位禁止词", coarseRequiredTags: "职位必须词",
   };
   let configExternalChanged = false;
@@ -2231,7 +2254,7 @@
   function getCurrentConfig() {
     const config = {
       targetCount: state.targetCount,
-      salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max },
+      salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max, negotiable: state.salaryFilter.negotiable !== false },
       recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
@@ -2255,6 +2278,7 @@
     }
     const config = data.config;
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => {
+      if (config[key] === undefined) config[key] = [];
       if (!Array.isArray(config[key]) || !config[key].every((tag) => typeof tag === "string" && tag.trim())) {
         throw new Error(`${CONFIG_FIELD_LABELS[key]}格式不正确，每个词都必须是非空文本。`);
       }
@@ -2266,7 +2290,8 @@
     const validSalaryValue = (value) => typeof value === "string"
       && (value === "" || (value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0));
     if (!isObject(salary) || !["none", "range", "atLeast", "atMost"].includes(salary.type)
-      || !validSalaryValue(salary.min) || !validSalaryValue(salary.max)) {
+      || !validSalaryValue(salary.min) || !validSalaryValue(salary.max)
+      || (salary.negotiable !== undefined && typeof salary.negotiable !== "boolean")) {
       throw new Error("薪资配置无效，请检查薪资类型和上下限。");
     }
     const activityOptions = RECRUITER_STATUS_OPTIONS;
@@ -2274,9 +2299,13 @@
       || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
       throw new Error("招聘者活跃状态配置无效。");
     }
+    // 薪资类型由上下限推出来（旧配置里“范围 + 最高留空”和“至少”是同一个意思）
+    const salaryMin = salary.type === "none" || salary.type === "atMost" ? "" : salary.min.trim();
+    const salaryMax = salary.type === "none" || salary.type === "atLeast" ? "" : salary.max.trim();
+    const salaryType = salaryMin && salaryMax ? "range" : salaryMin ? "atLeast" : salaryMax ? "atMost" : "none";
     const normalized = {
       targetCount: config.targetCount,
-      salaryFilter: { type: salary.type, min: salary.min, max: salary.max },
+      salaryFilter: { type: salaryType, min: salaryMin, max: salaryMax, negotiable: salary.negotiable !== false },
       recruiterActivityStatus: [...config.recruiterActivityStatus],
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { normalized[key] = [...config[key]]; });
@@ -2286,10 +2315,10 @@
   function formatConfigValue(key, value) {
     if (key === "targetCount") return `${value} 次`;
     if (key === "salaryFilter") {
-      if (value.type === "none") return "不限";
-      if (value.type === "atLeast") return value.min ? `至少 ${value.min}K` : "不限";
-      if (value.type === "atMost") return value.max ? `至多 ${value.max}K` : "不限";
-      return `${value.min || "不限"} ~ ${value.max || "不限"}K`;
+      const range = value.type === "atLeast" && value.min ? `${value.min}K 以上`
+        : value.type === "atMost" && value.max ? `${value.max}K 以下`
+        : value.type === "range" && (value.min || value.max) ? `${value.min || "不限"} ~ ${value.max || "不限"}K` : "不限";
+      return `${range}，${value.negotiable === false ? "不含" : "含"}面议`;
     }
     if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
     return value.join("、");
@@ -2510,8 +2539,11 @@
     };
   }
 
+  const isNegotiableSalary = (salaryText) => /面议/.test(salaryText);
+
   function salaryMatches(salaryText) {
     const sf = state.salaryFilter;
+    if (isNegotiableSalary(salaryText)) return sf.negotiable !== false;
     const min = (sf.type === "range" || sf.type === "atLeast") && sf.min ? parseInt(sf.min, 10) : null;
     const max = (sf.type === "range" || sf.type === "atMost") && sf.max ? parseInt(sf.max, 10) : null;
     if (min === null && max === null) return true;
@@ -2539,7 +2571,9 @@
     if (state.locationTags.length && !state.locationTags.some((k) => matchKeyword(address, k))) {
       return { reason: "location", label: "工作地不符" };
     }
-    if (!salaryMatches(info.salary)) return { reason: "salary", label: "薪资不符" };
+    if (!salaryMatches(info.salary)) {
+      return { reason: "salary", label: isNegotiableSalary(info.salary) ? "薪资面议" : "薪资不符" };
+    }
     return { reason: "", label: "" };
   }
 
@@ -2938,7 +2972,7 @@
       }
 
       let matchReason = "";
-      if (state.detailBlockedTags.length || state.detailRequiredTags.length || state.detailOptionalTags.length || state.recruiterBlockedTags.length) {
+      if (state.detailBlockedTags.length || state.detailRequiredTags.length || state.detailOptionalTags.length) {
         // 判断用小写文本，日志片段从原文截取（关键词正则不区分大小写，命中位置一致）
         const descRaw = cleanDesc(document.querySelector(".job-detail-body .desc"));
         const descText = descRaw.toLowerCase();
@@ -2971,10 +3005,17 @@
           }
         }
 
-        if (state.recruiterBlockedTags.length) {
-          const bossRaw = (findInDetail(".boss-info-attr")?.textContent || "").replace(/\s+/g, " ").trim();
-          const hitRecruiter = state.recruiterBlockedTags.find((kw) => matchKeyword(bossRaw.toLowerCase(), kw));
-          if (hitRecruiter) return skip(`招聘者职位命中"${hitRecruiter}"${quote(bossRaw, hitRecruiter)}`, `招聘者职位"${hitRecruiter}"`);
+      }
+
+      // 只投指定招聘者：读不到招聘者职位时不拦截，避免页面结构变化导致全部被跳过
+      if (state.recruiterIncludeTags.length) {
+        const bossRaw = (findInDetail(".boss-info-attr")?.textContent || "").replace(/\s+/g, " ").trim();
+        if (bossRaw) {
+          const hitRecruiter = state.recruiterIncludeTags.find((kw) => matchKeyword(bossRaw.toLowerCase(), kw));
+          if (!hitRecruiter) return skip(`招聘者"${bossRaw}"不在只投范围`, "招聘者职位不符");
+          matchReason = (matchReason ? matchReason + "；" : "") + `招聘者"${bossRaw}"`;
+        } else {
+          matchReason = (matchReason ? matchReason + "；" : "") + "未读到招聘者职位，未做招聘者筛选";
         }
       }
 
@@ -3235,7 +3276,7 @@
         if (state.detailBlockedTags.length) filters.push(`禁止【${state.detailBlockedTags.join("、")}】`);
         if (state.detailRequiredTags.length) filters.push(`必须【${state.detailRequiredTags.join("、")}】`);
         if (state.detailOptionalTags.length) filters.push(`可选【${state.detailOptionalTags.join("、")}】`);
-        if (state.recruiterBlockedTags.length) filters.push(`过滤招聘者【${state.recruiterBlockedTags.join("、")}】`);
+        if (state.recruiterIncludeTags.length) filters.push(`只投招聘者【${state.recruiterIncludeTags.join("、")}】`);
         Core.log(`筛选条件：${filters.join("，")}`);
 
         await Core.startProcessing(run);
@@ -3466,6 +3507,7 @@ li.job-card-box.zdl-preview-flash{outline:2px solid #f59e0b;outline-offset:-2px;
 .zdl-salary-field .zdl-salary-input::-webkit-inner-spin-button,.zdl-salary-field .zdl-salary-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
 .zdl-salary-field .zdl-salary-input::placeholder{color:#b4c1d4}
 .zdl-salary-summary{margin-left:auto;padding:0 8px;border-radius:10px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px;font-weight:500;line-height:1.9;white-space:nowrap}
+.zdl-salary-negotiable{height:32px;box-sizing:border-box}
 .zdl-salary-summary.empty{background:transparent;color:#a9b4c4;font-weight:400}
 a.zdl-icon-btn{text-decoration:none}
 li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-offset:-2px;border-radius:12px}
