@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.0.0.0
+// @version      1.1.0
 // @description  求职工具！Yangshengzhou开发用于提高BOSS直聘投递效率，批量沟通，高效求职。安装后打开 BOSS 直聘「职位」页使用
 // @author       Yangshengzhou
 // @match        https://www.zhipin.com/*
@@ -11,6 +11,8 @@
 // @homepageURL  https://gitee.com/yangshengzhou
 // @license      AGPL-3.0-or-later
 // @icon         https://www.zhipin.com/favicon.ico
+// @updateURL    https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/zdl%E6%94%B9%E7%89%88-BOSS%E6%B5%B7%E6%8A%95%E5%8A%A9%E6%89%8B.user.js
+// @downloadURL  https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/zdl%E6%94%B9%E7%89%88-BOSS%E6%B5%B7%E6%8A%95%E5%8A%A9%E6%89%8B.user.js
 // @noframes
 // ==/UserScript==
 
