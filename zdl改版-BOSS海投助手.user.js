@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.8.0
+// @version      1.8.1
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
 // @match        https://www.zhipin.com/*
@@ -3824,7 +3824,7 @@
 .zdl-settings-panel[hidden]{display:none}
 .zdl-settings-header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:14px;margin-bottom:14px;border-bottom:1px solid var(--zdl-border);flex-shrink:0}
 .zdl-settings-header h4{margin:0;font-size:15px;line-height:1.5;font-weight:600;color:var(--zdl-ink)}
-.zdl-settings-panel .zdl-settings-scroll{flex:1;min-height:0;max-height:none;padding-right:3px;overflow:auto}
+.zdl-settings-panel .zdl-settings-scroll{flex:1;min-height:120px;max-height:none;padding-right:3px;overflow:auto}
 .zdl-panel{position:fixed;box-sizing:border-box;top:24px;right:16px;width:368px;height:540px;max-width:calc(100vw - 32px);max-height:calc(100vh - 48px);min-width:min(320px,calc(100vw - 32px));min-height:min(350px,calc(100vh - 48px));border-radius:16px;padding:18px;font-family:var(--zdl-font);z-index:2147483647;display:flex;flex-direction:column;background:#fff;box-shadow:var(--zdl-shadow-lg);border:1px solid var(--zdl-border);overflow:hidden}
 .zdl-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:14px;margin-bottom:16px;flex-shrink:0}
 .zdl-btn-group{display:flex;align-items:center;gap:4px;flex-shrink:0}
@@ -3888,7 +3888,7 @@
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
 .zdl-tag-hint{flex-basis:100%;margin:0;color:var(--zdl-text-4);font-size:11px;line-height:1.6}
 .zdl-tag-hint.warn{color:#b45309}
-.zdl-preview{flex-shrink:0;margin:0 0 12px;padding:9px 11px;border:1px solid var(--zdl-border);border-radius:9px;background:var(--zdl-secondary);color:var(--zdl-text-2);font-size:12px;line-height:1.6}
+.zdl-preview{display:flex;flex-direction:column;flex-shrink:0;max-height:min(46vh,420px);overflow:hidden;margin:0 0 12px;padding:9px 11px;border:1px solid var(--zdl-border);border-radius:9px;background:var(--zdl-secondary);color:var(--zdl-text-2);font-size:12px;line-height:1.6}
 .zdl-preview-head{display:flex;align-items:baseline;gap:8px}
 .zdl-preview-summary{flex:1;min-width:0}
 .zdl-preview-summary strong{color:var(--zdl-primary);font-size:14px;font-weight:600;font-variant-numeric:tabular-nums}
@@ -3906,9 +3906,14 @@
 .zdl-filter-link{margin-left:auto;color:var(--zdl-primary);font-size:11px;font-weight:400;text-decoration:none}
 .zdl-filter-link:hover{text-decoration:underline}
 .zdl-tag-section[hidden]{display:none}
+.zdl-preview-head,.zdl-preview-warn{flex-shrink:0}
+/* 明细内容多时只在预览区内部滚动，不把下方的规则区挤没 */
+.zdl-preview-detail{flex:1 1 auto;min-height:0;margin-right:-8px;padding-right:8px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#c5d1e2 transparent}
+.zdl-preview-detail::-webkit-scrollbar{width:6px}
+.zdl-preview-detail::-webkit-scrollbar-thumb{background:#c5d1e2;border-radius:4px}
 .zdl-preview-detail[hidden]{display:none}
 .zdl-preview-reasons{margin:8px 0 6px;color:var(--zdl-text-3);font-size:11px;line-height:1.6}
-.zdl-preview-list{max-height:min(150px,22vh);overflow:auto;border-top:1px solid var(--zdl-border);scrollbar-width:thin;scrollbar-color:#c5d1e2 transparent}
+.zdl-preview-list{border-top:1px solid var(--zdl-border);scrollbar-width:thin;scrollbar-color:#c5d1e2 transparent}
 .zdl-preview-row{display:flex;align-items:baseline;gap:8px;width:100%;box-sizing:border-box;padding:5px 4px;border:0;border-bottom:1px solid #e9eef5;background:none;color:inherit;font:inherit;font-size:12px;text-align:left;cursor:pointer}
 .zdl-preview-row:hover{background:#fff}
 .zdl-preview-title{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--zdl-ink)}
