@@ -1,14 +1,14 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.2.0
+// @version      1.3.0
 // @description  求职工具！Yangshengzhou开发用于提高BOSS直聘投递效率，批量沟通，高效求职。安装后打开 BOSS 直聘「职位」页使用
 // @author       Yangshengzhou
 // @match        https://www.zhipin.com/*
 // @grant        none
 // @run-at       document-idle
-// @supportURL   https://github.com/yangshengzhou03
-// @homepageURL  https://gitee.com/yangshengzhou
+// @supportURL   https://github.com/erha1499/boss-haitou-helper/issues
+// @homepageURL  https://github.com/erha1499/boss-haitou-helper
 // @license      AGPL-3.0-or-later
 // @icon         https://www.zhipin.com/favicon.ico
 // @updateURL    https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/zdl%E6%94%B9%E7%89%88-BOSS%E6%B5%B7%E6%8A%95%E5%8A%A9%E6%89%8B.user.js
@@ -30,6 +30,7 @@
   };
 
   const JOBS_PAGE_URL = "https://www.zhipin.com/web/geek/jobs?ka=header-jobs";
+  const REPO_URL = "https://github.com/erha1499/boss-haitou-helper";
   const isJobsPage = () => /^\/web\/geek\/jobs(?:\/|$)/.test(location.pathname);
 
   const getStoredJSON = (key, defaultValue) => {
@@ -294,6 +295,13 @@
           ? (state.isRunning ? "停止" : state.activeRun.started ? "正在停止…" : "准备中…") : "启动";
         elements.controlBtn.disabled = !state.isRunning && (!!state.activeRun || !state.account.id
           || state.account.needsReload || !!state.account.error || !isJobsPage());
+        elements.controlBtn.classList.toggle("is-running", !!state.activeRun);
+      }
+      if (elements.miniIcon) {
+        const label = state.isRunning ? "海投助手投递中，点击展开" : "展开海投助手";
+        elements.miniIcon.classList.toggle("running", state.isRunning);
+        elements.miniIcon.title = label;
+        elements.miniIcon.setAttribute("aria-label", label);
       }
       if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
       if (elements.configImportBtn) UI._updateConfigControls();
@@ -359,22 +367,76 @@
     pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6M10 3v6l-3 4v2h10v-2l-3-4V3M12 15v6"/></svg>',
     minus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 12h14"/></svg>',
     close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg>',
+    github: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>',
     settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h5m4 0h7M4 17h7m4 0h5"/><circle cx="11" cy="7" r="2"/><circle cx="13" cy="17" r="2"/></svg>',
   };
   const SVG_ICON = `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;fill:white;"><path d="M512 116.032a160 160 0 0 1 52.224 311.232v259.008c118.144-22.272 207.552-121.088 207.552-239.36 0-25.152 21.568-45.568 48.128-45.568 26.624 0 48.128 20.416 48.128 45.632 0 184.832-158.848 335.232-354.048 335.232S160 631.808 160 446.976c0-25.152 21.568-45.632 48.128-45.632 26.624 0 48.128 20.48 48.128 45.632 0 118.144 89.088 216.96 206.976 239.296V428.416A160.064 160.064 0 0 1 512 116.032z m0 96a64 64 0 1 0 0 128 64 64 0 0 0 0-128z m-36.672 668.48l-21.888-19.584a17.92 17.92 0 0 0-24.64 0l-21.952 19.584a56.32 56.32 0 0 1-77.504 0l-21.952-19.584a17.92 17.92 0 0 0-24.64 0l-28.288 25.6c-9.6 8.704-23.36 6.4-30.72-4.992a29.696 29.696 0 0 1 4.16-36.672l28.352-25.6a56.32 56.32 0 0 1 77.568 0l21.888 19.584a17.92 17.92 0 0 0 24.704 0l21.824-19.52a56.32 56.32 0 0 1 77.568 0l21.888 19.52a17.92 17.92 0 0 0 24.64 0l21.952-19.52a56.32 56.32 0 0 1 77.504 0l21.952 19.52a17.92 17.92 0 0 0 24.64 0l21.824-19.52a56.32 56.32 0 0 1 77.632 0l21.824 19.52c9.664 8.704 11.52 25.152 4.224 36.672-7.296 11.52-21.12 13.696-30.72 4.992l-21.888-19.584a17.92 17.92 0 0 0-24.64 0l-21.888 19.584a56.32 56.32 0 0 1-77.568 0l-21.888-19.584a17.92 17.92 0 0 0-24.64 0l-21.888 19.584a57.408 57.408 0 0 1-38.656 15.488 58.176 58.176 0 0 1-38.784-15.488z"/></svg>`;
 
+  const PANEL_MOTION = "transform .26s cubic-bezier(.4,0,.2,1), opacity .2s ease";
+  const prefersReducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  let panelMotionTimer = 0;
+
+  // 让面板以小图标为中心缩放，收起和展开看起来是同一个东西。
+  function setPanelOriginToIcon() {
+    const panelRect = elements.panel.getBoundingClientRect();
+    // 用布局位置而不是 getBoundingClientRect，图标的弹出动画会改变后者的尺寸。
+    const icon = elements.miniIcon;
+    const iconX = icon.offsetLeft + icon.offsetWidth / 2;
+    const iconY = icon.offsetTop + icon.offsetHeight / 2;
+    elements.panel.style.transformOrigin = `${iconX - panelRect.left}px ${iconY - panelRect.top}px`;
+  }
+
   function minimizePanel() {
+    if (state.ui.isMinimized) return;
     state.ui.isMinimized = true;
-    // 用户没拖动过小图标时，让它出现在面板原来的右上角，而不是远处的左下角。
-    if (!getStoredJSON("miniIconPos", null)) {
-      const rect = elements.panel.getBoundingClientRect();
-      elements.miniIcon.style.left = `${Math.max(8, rect.right - 48)}px`;
-      elements.miniIcon.style.bottom = `${Math.max(8, window.innerHeight - rect.top - 48)}px`;
-    }
-    elements.panel.style.display = "none";
-    elements.miniIcon.style.display = "flex";
     UI._hideSettingsPanel();
     UI._hideAccountsPanel();
+    const panel = elements.panel;
+    const icon = elements.miniIcon;
+    // 用户没拖动过小图标时，让它出现在面板原来的右上角，而不是远处的左下角。
+    if (!getStoredJSON("miniIconPos", null)) {
+      const rect = panel.getBoundingClientRect();
+      icon.style.left = `${Math.max(8, rect.right - 48)}px`;
+      icon.style.bottom = `${Math.max(8, window.innerHeight - rect.top - 48)}px`;
+    }
+    icon.style.display = "flex";
+    clearTimeout(panelMotionTimer);
+    if (prefersReducedMotion()) {
+      panel.style.display = "none";
+      return;
+    }
+    setPanelOriginToIcon();
+    panel.style.transition = PANEL_MOTION;
+    panel.classList.add("zdl-panel-hidden");
+    icon.classList.remove("zdl-pop");
+    void icon.offsetWidth;
+    icon.classList.add("zdl-pop");
+    panelMotionTimer = setTimeout(() => {
+      if (state.ui.isMinimized) panel.style.display = "none";
+    }, 260);
+  }
+
+  function restorePanel() {
+    if (!state.ui.isMinimized) return;
+    state.ui.isMinimized = false;
+    const panel = elements.panel;
+    clearTimeout(panelMotionTimer);
+    if (prefersReducedMotion()) {
+      panel.classList.remove("zdl-panel-hidden");
+      panel.style.display = "";
+      elements.miniIcon.style.display = "none";
+      return;
+    }
+    // 先在未缩放状态下测量位置，再切到缩小状态，否则缩放中心会算错。
+    panel.style.transition = "none";
+    panel.classList.remove("zdl-panel-hidden");
+    panel.style.display = "";
+    setPanelOriginToIcon();
+    panel.classList.add("zdl-panel-hidden");
+    elements.miniIcon.style.display = "none";
+    void panel.offsetWidth;
+    panel.style.transition = PANEL_MOTION;
+    panel.classList.remove("zdl-panel-hidden");
   }
 
   const UI = {
@@ -672,7 +734,19 @@
       logSection.className = "zdl-log-section";
       const logHeading = document.createElement("div");
       logHeading.className = "zdl-log-heading";
-      logHeading.textContent = "投递日志";
+      const logTitle = document.createElement("span");
+      logTitle.textContent = "投递日志";
+      const clearLog = document.createElement("button");
+      clearLog.type = "button";
+      clearLog.className = "zdl-log-clear";
+      clearLog.textContent = "清空";
+      clearLog.title = "清空日志（不影响投递记录）";
+      clearLog.addEventListener("click", () => {
+        state.logEntries = [];
+        saveLogEntries();
+        elements.log.replaceChildren();
+      });
+      logHeading.append(logTitle, clearLog);
       logSection.append(logHeading, elements.log);
       const resizeHandle = document.createElement("div");
       resizeHandle.className = "zdl-resize-handle";
@@ -755,7 +829,17 @@
       const historyBtn = this._createIconButton(UI_ICONS.history, () => this._showHistoryPanel(), "投递历史记录");
       elements.historyBtn = historyBtn;
 
+      const repoLink = document.createElement("a");
+      repoLink.className = "zdl-icon-btn svg-btn";
+      repoLink.href = REPO_URL;
+      repoLink.target = "_blank";
+      repoLink.rel = "noopener noreferrer";
+      repoLink.innerHTML = UI_ICONS.github;
+      repoLink.title = "项目主页（GitHub）：使用说明、反馈问题";
+      repoLink.setAttribute("aria-label", "打开项目 GitHub 主页");
+
       btnGroup.append(
+        repoLink,
         this._createIconButton(UI_ICONS.help, () => this._showTutorial(), "新手教程"),
         historyBtn,
         pinBtn,
@@ -1487,93 +1571,71 @@
       const row = document.createElement("div");
       row.className = "zdl-tag-row";
 
-      const label = this._createFilterLabel("薪资范围", "按月薪 K 计，日薪按 24 天折算");
+      const label = this._createFilterLabel("薪资范围", "月薪，留空表示不限；日薪按 24 天折算");
+      const sf = state.salaryFilter;
+      const makeInput = (value, placeholder, aria) => {
+        const input = document.createElement("input");
+        input.className = "zdl-salary-input";
+        input.type = "number";
+        input.min = "0";
+        input.step = "1";
+        input.inputMode = "numeric";
+        input.placeholder = placeholder;
+        input.value = value;
+        input.setAttribute("aria-label", aria);
+        return input;
+      };
+      // 兼容旧配置：按类型决定显示哪一边的数值
+      const minInput = makeInput(sf.type === "range" || sf.type === "atLeast" ? sf.min : "", "不限", "最低月薪（K）");
+      const maxInput = makeInput(sf.type === "range" || sf.type === "atMost" ? sf.max : "", "不限", "最高月薪（K）");
 
-      const typeSelect = document.createElement("select");
-      typeSelect.className = "zdl-salary-select";
-      typeSelect.innerHTML = `
-        <option value="none">不限</option>
-        <option value="range">范围</option>
-        <option value="atLeast">至少</option>
-        <option value="atMost">至多</option>
-      `;
-      typeSelect.value = state.salaryFilter.type;
-
-      const minInput = document.createElement("input");
-      minInput.className = "zdl-salary-input";
-      minInput.type = "number";
-      minInput.placeholder = "最低K";
-      minInput.value = state.salaryFilter.min;
-      minInput.min = "0";
-
+      const field = (input) => {
+        const wrap = document.createElement("label");
+        wrap.className = "zdl-salary-field";
+        const unit = document.createElement("span");
+        unit.className = "zdl-salary-unit";
+        unit.textContent = "K";
+        wrap.append(input, unit);
+        return wrap;
+      };
       const sep = document.createElement("span");
       sep.className = "zdl-salary-sep";
+      sep.textContent = "至";
+      const summary = document.createElement("span");
+      summary.className = "zdl-salary-summary";
 
-      const maxInput = document.createElement("input");
-      maxInput.className = "zdl-salary-input";
-      maxInput.type = "number";
-      maxInput.placeholder = "最高K";
-      maxInput.value = state.salaryFilter.max;
-      maxInput.min = "0";
-
-      const unit = document.createElement("span");
-      unit.className = "zdl-salary-unit";
-      unit.textContent = "K";
-
+      const clean = (input) => {
+        const n = parseInt(input.value, 10);
+        input.value = Number.isFinite(n) && n > 0 ? String(n) : "";
+        return input.value;
+      };
+      const renderSummary = (min, max) => {
+        summary.textContent = min && max ? `${min}–${max}K` : min ? `${min}K 以上` : max ? `${max}K 以下` : "不限";
+        summary.classList.toggle("empty", !min && !max);
+      };
       const saveSalary = () => {
-        state.salaryFilter.type = typeSelect.value;
-        if (typeSelect.value === "none") {
-          state.salaryFilter.min = "";
-          state.salaryFilter.max = "";
-        } else {
-          state.salaryFilter.min = minInput.value;
-          state.salaryFilter.max = maxInput.value;
+        let min = clean(minInput), max = clean(maxInput);
+        if (min && max && Number(min) > Number(max)) {
+          [min, max] = [max, min];
+          minInput.value = min;
+          maxInput.value = max;
         }
+        state.salaryFilter.type = min && max ? "range" : min ? "atLeast" : max ? "atMost" : "none";
+        state.salaryFilter.min = min;
+        state.salaryFilter.max = max;
+        renderSummary(min, max);
         invalidateConfigUndo();
         localStorage.setItem("salaryFilter", JSON.stringify(state.salaryFilter));
         this._refreshFilterCounts();
       };
-
-      const updateInputs = () => {
-        if (typeSelect.value === "none") {
-          minInput.style.display = "none";
-          maxInput.style.display = "none";
-          sep.style.display = "none";
-          unit.style.display = "none";
-        } else {
-          sep.style.display = "";
-          unit.style.display = "";
-          if (typeSelect.value === "atLeast") {
-            maxInput.style.display = "none";
-            maxInput.value = "";
-            minInput.style.display = "";
-            sep.textContent = "\u2265";
-            minInput.placeholder = "最低K";
-          } else if (typeSelect.value === "atMost") {
-            minInput.style.display = "none";
-            minInput.value = "";
-            maxInput.style.display = "";
-            sep.textContent = "\u2264";
-            maxInput.placeholder = "最高K";
-          } else {
-            minInput.style.display = "";
-            maxInput.style.display = "";
-            sep.textContent = "\uFF0D";
-            minInput.placeholder = "最低K";
-            maxInput.placeholder = "最高K";
-          }
-        }
-      };
-
-      typeSelect.addEventListener("change", () => {
-        updateInputs();
-        saveSalary();
-      });
       minInput.addEventListener("change", saveSalary);
       maxInput.addEventListener("change", saveSalary);
+      [minInput, maxInput].forEach((input) => input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") input.blur();
+      }));
 
-      updateInputs();
-      row.append(label, typeSelect, minInput, sep, maxInput, unit);
+      renderSummary(minInput.value, maxInput.value);
+      row.append(label, field(minInput), sep, field(maxInput), summary);
       section.appendChild(row);
       return section;
     },
@@ -1696,7 +1758,7 @@
 
     _makeDraggable(panel) {
       // 筛选div、日志div、缩放手柄及其内部不可拖动
-      const NO_DRAG = ".zdl-delivery-controls, .zdl-log-section, .zdl-stats-strip, .zdl-scroll-wrap, .zdl-log, .zdl-resize-handle, button, input, select, textarea, .zdl-tag, .zdl-status-chip, .zdl-collapse-header, .zdl-tag-add-trigger, .zdl-tag-remove, .zdl-salary-select, .zdl-salary-input";
+      const NO_DRAG = "a, .zdl-delivery-controls, .zdl-log-section, .zdl-stats-strip, .zdl-scroll-wrap, .zdl-log, .zdl-resize-handle, button, input, select, textarea, .zdl-tag, .zdl-status-chip, .zdl-collapse-header, .zdl-tag-add-trigger, .zdl-tag-remove, .zdl-salary-select, .zdl-salary-input";
 
       panel.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
@@ -1766,20 +1828,19 @@
       elements.miniIcon = document.createElement("div");
       elements.miniIcon.className = "zdl-mini-icon";
       elements.miniIcon.innerHTML = SVG_ICON;
+      elements.miniIcon.title = "展开海投助手";
+      elements.miniIcon.setAttribute("role", "button");
+      elements.miniIcon.setAttribute("aria-label", "展开海投助手");
+      elements.miniIcon.tabIndex = 0;
+      elements.miniIcon.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); restorePanel(); }
+      });
+      elements.miniIcon.addEventListener("animationend", () => elements.miniIcon.classList.remove("zdl-pop"));
 
       if (savedPos) {
         elements.miniIcon.style.left = savedPos.left + "px";
         elements.miniIcon.style.bottom = savedPos.bottom + "px";
       }
-
-      elements.miniIcon.addEventListener("mouseenter", () => {
-        elements.miniIcon.style.transform = "scale(1.1)";
-        elements.miniIcon.style.boxShadow = "0 8px 20px rgba(var(--zdl-primary-rgb), 0.5)";
-      });
-      elements.miniIcon.addEventListener("mouseleave", () => {
-        elements.miniIcon.style.transform = "scale(1)";
-        elements.miniIcon.style.boxShadow = "0 6px 16px rgba(var(--zdl-primary-rgb), 0.4)";
-      });
 
       let dragStartX, dragStartY, startLeft, startBottom, hasMoved;
 
@@ -1804,7 +1865,7 @@
         const onUp = () => {
           document.removeEventListener("mousemove", onMove);
           document.removeEventListener("mouseup", onUp);
-          elements.miniIcon.style.transition = "all 0.3s ease";
+          elements.miniIcon.style.transition = "";
           elements.miniIcon.style.cursor = "";
           if (hasMoved) {
             localStorage.setItem("miniIconPos", JSON.stringify({
@@ -1812,11 +1873,7 @@
               bottom: parseInt(elements.miniIcon.style.bottom, 10) || 40,
             }));
           }
-          if (!hasMoved) {
-            state.ui.isMinimized = false;
-            elements.panel.style.display = "";
-            elements.miniIcon.style.display = "none";
-          }
+          if (!hasMoved) restorePanel();
         };
         document.addEventListener("mousemove", onMove);
         document.addEventListener("mouseup", onUp);
@@ -2389,16 +2446,16 @@
 
   function showNotification(message, type = "success") {
     const notification = document.createElement("div");
-    notification.className = "zdl-notify";
-    notification.style.background = type === "success" ? "rgba(40, 167, 69, 0.9)" : "rgba(220, 53, 69, 0.9)";
+    notification.className = `zdl-notify ${type === "success" ? "success" : "error"}`;
+    notification.setAttribute("role", type === "success" ? "status" : "alert");
     notification.textContent = message;
     document.body.appendChild(notification);
 
-    setTimeout(() => (notification.style.opacity = "1"), 10);
+    requestAnimationFrame(() => notification.classList.add("show"));
     setTimeout(() => {
-      notification.style.opacity = "0";
+      notification.classList.remove("show");
       setTimeout(() => notification.remove(), 300);
-    }, 2000);
+    }, type === "success" ? 2200 : 3500);
   }
 
   // 记录各账号已沟通过的岗位 id，下次直接在粗筛阶段跳过，不再逐个点开。
@@ -2881,9 +2938,11 @@
       item.className = "zdl-log-item";
       const html = logEntry
         .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/已投递/g, '<span style="color:#16a34a;font-weight:600">已投递</span>')
-        .replace(/已跳过/g, '<span style="color:#dc2626;font-weight:600">已跳过</span>');
+        .replace(/^\[([^\]]+)\]/, '<span class="zdl-log-time">$1</span>')
+        .replace(/已投递/g, '<span class="zdl-log-ok">已投递</span>')
+        .replace(/已跳过/g, '<span class="zdl-log-skip">已跳过</span>');
       item.innerHTML = html;
+      if (/本次共投递|自动停止|投递已停止|已离开职位页/.test(logEntry)) item.classList.add("zdl-log-key");
       return item;
     },
 
@@ -2893,9 +2952,10 @@
       saveLogEntries();
       const logPanel = document.querySelector("#pro-log");
       if (logPanel) {
-        const logItem = this.renderLogItem(logEntry);
-        logPanel.appendChild(logItem);
-        logPanel.scrollTop = logPanel.scrollHeight;
+        // 用户往上翻看旧日志时不强行滚到底
+        const atBottom = logPanel.scrollHeight - logPanel.scrollTop - logPanel.clientHeight < 40;
+        logPanel.appendChild(this.renderLogItem(logEntry));
+        if (atBottom) logPanel.scrollTop = logPanel.scrollHeight;
       }
     },
 
@@ -3113,7 +3173,7 @@
 .zdl-scroll-wrap::-webkit-scrollbar-track{background:transparent;border-radius:4px}
 .zdl-scroll-wrap::-webkit-scrollbar-thumb{background:#c5d1e2;border-radius:4px}
 .zdl-resize-handle{position:absolute;right:4px;bottom:4px;width:12px;height:12px;cursor:nwse-resize;opacity:.55;background:linear-gradient(135deg,transparent 50%,#b4c1d4 50%,transparent 55%,#b4c1d4 55%,transparent 60%,#b4c1d4 60%);z-index:2}
-.zdl-mini-icon{width:40px;height:40px;position:fixed;bottom:40px;left:40px;background:var(--zdl-primary);border-radius:50%;box-shadow:0 6px 16px rgba(var(--zdl-primary-rgb),.4);cursor:pointer;display:none;justify-content:center;align-items:center;color:#fff;z-index:2147483647;transition:all .3s ease;overflow:hidden;user-select:none}
+.zdl-mini-icon{width:40px;height:40px;position:fixed;bottom:40px;left:40px;background:var(--zdl-primary);border-radius:50%;box-shadow:0 6px 16px rgba(var(--zdl-primary-rgb),.4);cursor:pointer;display:none;justify-content:center;align-items:center;color:#fff;z-index:2147483647;transition:transform .15s ease,box-shadow .15s ease;overflow:visible;user-select:none;padding:8px;box-sizing:border-box}
 .zdl-status-tags{display:contents}
 .zdl-status-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;font-family:inherit;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s,color .15s,border-color .15s;white-space:nowrap;background:#fff;color:#7b8aa1;border:1px solid var(--zdl-border);user-select:none}
 .zdl-status-chip:hover{background:var(--zdl-secondary)}
@@ -3122,7 +3182,9 @@
 .zdl-status-check{position:relative;width:12px;height:12px;flex-shrink:0;box-sizing:border-box;border:1.5px solid #b4c1d4;border-radius:3px;background:#fff;transition:background .15s,border-color .15s}
 .zdl-status-chip.active .zdl-status-check{border-color:var(--zdl-primary);background:var(--zdl-primary)}
 .zdl-status-chip.active .zdl-status-check::after{content:"";position:absolute;left:2.5px;top:0;width:3px;height:6px;border:solid #fff;border-width:0 1.5px 1.5px 0;transform:rotate(45deg)}
-.zdl-notify{position:fixed;top:20px;left:50%;transform:translateX(-50%);color:#fff;padding:10px 15px;border-radius:8px;box-shadow:0 4px 10px rgba(0,0,0,.2);z-index:9999999;opacity:0;transition:opacity .3s ease}
+.zdl-notify{position:fixed;top:20px;left:50%;z-index:2147483647;box-sizing:border-box;max-width:min(420px,calc(100vw - 32px));padding:10px 16px 10px 14px;border:1px solid #e4eaf3;border-left:3px solid #16a34a;border-radius:9px;background:#fff;color:#17243a;font:13px/1.6 "PingFang SC","Microsoft YaHei","Segoe UI",system-ui,sans-serif;box-shadow:0 10px 30px rgba(23,36,58,.16);opacity:0;transform:translate(-50%,-8px);transition:opacity .2s ease,transform .2s ease}
+.zdl-notify.error{border-left-color:#dc2626}
+.zdl-notify.show{opacity:1;transform:translate(-50%,0)}
 .zdl-tag-section{margin-bottom:12px}
 .zdl-collapse-body .zdl-tag-section+.zdl-tag-section{border-top:1px solid #edf0f5;padding-top:12px}
 .zdl-tag-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
@@ -3149,6 +3211,25 @@
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
 .zdl-tag-hint{flex-basis:100%;margin:0;color:#98a4b5;font-size:11px;line-height:1.6}
 .zdl-tag-hint.warn{color:#b45309}
+.zdl-panel.zdl-panel-hidden{opacity:0;transform:scale(.06);pointer-events:none}
+.zdl-mini-icon:hover{transform:scale(1.08);box-shadow:0 8px 20px rgba(var(--zdl-primary-rgb),.5)}
+.zdl-mini-icon:focus-visible{outline:2px solid #a6c0f7;outline-offset:3px}
+.zdl-mini-icon.zdl-pop{animation:zdl-pop .28s cubic-bezier(.34,1.56,.64,1) .14s both}
+.zdl-mini-icon.running::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--zdl-primary);animation:zdl-ring 1.8s ease-out infinite;pointer-events:none}
+@keyframes zdl-pop{from{opacity:0;transform:scale(.3)}to{opacity:1;transform:scale(1)}}
+@keyframes zdl-ring{0%{opacity:.55;transform:scale(1)}100%{opacity:0;transform:scale(1.45)}}
+@keyframes zdl-fade-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
+.zdl-settings-panel:not([hidden]),.zdl-history-panel{animation:zdl-fade-in .18s ease}
+.zdl-btn-start.is-running{background:#fff;color:#c2410c;box-shadow:none;outline:1px solid #f3d3c2;outline-offset:-1px}
+.zdl-btn-start.is-running:hover{background:#fff7f3}
+.zdl-salary-field{display:inline-flex;align-items:center;gap:4px;height:32px;padding:0 8px 0 2px;border:1px solid var(--zdl-border);border-radius:6px;background:#fff;cursor:text;transition:border-color .15s,box-shadow .15s}
+.zdl-salary-field:focus-within{border-color:#a6c0f7;box-shadow:0 0 0 2px var(--zdl-accent)}
+.zdl-salary-field .zdl-salary-input{width:52px;height:30px;border:0;background:transparent;box-shadow:none;padding:0 4px;appearance:textfield;-moz-appearance:textfield}
+.zdl-salary-field .zdl-salary-input::-webkit-inner-spin-button,.zdl-salary-field .zdl-salary-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+.zdl-salary-field .zdl-salary-input::placeholder{color:#b4c1d4}
+.zdl-salary-summary{margin-left:auto;padding:0 8px;border-radius:10px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px;font-weight:500;line-height:1.9;white-space:nowrap}
+.zdl-salary-summary.empty{background:transparent;color:#a9b4c4;font-weight:400}
+a.zdl-icon-btn{text-decoration:none}
 li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-offset:-2px;border-radius:12px}
 .zdl-tag-hint code{padding:0 3px;border-radius:3px;background:var(--zdl-secondary);color:#53647e;font:11px ui-monospace,monospace}
 .zdl-tag-input{box-sizing:border-box;min-width:0;flex:1;padding:7px 9px;border:1px solid var(--zdl-border);border-radius:6px;font-size:12px;line-height:1.5;background:#fff;color:var(--zdl-ink);outline:none;transition:border-color .15s,box-shadow .15s}
@@ -3156,7 +3237,6 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-tag-add-btn{padding:6px 11px;background:var(--zdl-primary);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;white-space:nowrap}
 .zdl-tag-add-btn:hover{filter:brightness(1.1)}
 .zdl-tag-inline{display:contents}
-.zdl-salary-select{box-sizing:border-box;height:32px;padding:4px 7px;border:1px solid var(--zdl-border);border-radius:6px;font-size:12px;background:#fff;color:#53647e;cursor:pointer;flex-shrink:0}
 .zdl-salary-input{box-sizing:border-box;height:32px;padding:4px 7px;border:1px solid var(--zdl-border);border-radius:6px;font-size:12px;background:#fff;color:var(--zdl-ink);outline:none;flex-shrink:0;text-align:center}
 .zdl-salary-input:focus{border-color:var(--zdl-primary)}
 .zdl-tag.editing{outline:2px solid var(--zdl-primary);outline-offset:2px;border-radius:14px}
@@ -3206,7 +3286,6 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-collapse-desc{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#98a4b5;font-size:11px;font-weight:400}
 .zdl-collapse-count{margin-left:auto;flex-shrink:0;padding:0 7px;border-radius:10px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px;font-weight:500;line-height:1.8;font-variant-numeric:tabular-nums}
 .zdl-collapse-count.empty{background:transparent;color:#a9b4c4;font-weight:400}
-.zdl-salary-input{width:64px}
 .zdl-salary-sep{flex-shrink:0;color:#98a4b5;font-size:13px}
 .zdl-salary-unit{flex-shrink:0;color:#667894;font-size:12px;white-space:nowrap}
 .zdl-hist-row.blocked .zdl-hist-name,.zdl-hist-row.blocked .zdl-hist-count{color:#a9b4c4}
@@ -3238,14 +3317,20 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-settings-open svg{width:14px;height:14px;flex-shrink:0}
 .zdl-icon-btn svg,#zdl-hist-close svg{width:100%;height:100%;display:block}
 .zdl-log-section{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--zdl-border);border-radius:10px;background:var(--zdl-secondary)}
-.zdl-log-heading{padding:9px 12px;border-bottom:1px solid var(--zdl-border);font-size:11px;font-weight:500;line-height:1.5;color:#7b8aa1;flex-shrink:0}
+.zdl-log-heading{display:flex;align-items:center;justify-content:space-between;padding:7px 8px 7px 12px;border-bottom:1px solid var(--zdl-border);font-size:11px;font-weight:500;line-height:1.5;color:#7b8aa1;flex-shrink:0}
+.zdl-log-clear{padding:1px 7px;border:0;border-radius:5px;background:transparent;color:#98a4b5;font:inherit;font-weight:400;cursor:pointer}
+.zdl-log-clear:hover{background:#fff;color:var(--zdl-primary)}
+.zdl-log-time{margin-right:6px;color:#a9b4c4;font-variant-numeric:tabular-nums}
+.zdl-log-ok{color:#16a34a;font-weight:600}
+.zdl-log-skip{color:#c2410c;font-weight:500}
+.zdl-log-item.zdl-log-key{margin:4px 0;padding:6px 8px;border-radius:6px;background:#fff;color:var(--zdl-ink)}
 .zdl-filter-group{margin-bottom:10px;border:1px solid var(--zdl-border);border-radius:9px;overflow:hidden;background:#fff}
 .zdl-filter-group:last-child{margin-bottom:0}
 .zdl-tag-row>.zdl-filter-label{flex-basis:100%;margin-bottom:2px}
 .zdl-collapse-body>.zdl-tag-section:last-child{margin-bottom:0}
-.zdl-panel button:focus-visible,.zdl-settings-panel button:focus-visible,.zdl-history-panel button:focus-visible,.zdl-target-input:focus-visible,.zdl-salary-select:focus-visible,.zdl-config-text:focus-visible{outline:2px solid #a6c0f7;outline-offset:2px}
+.zdl-panel button:focus-visible,.zdl-settings-panel button:focus-visible,.zdl-history-panel button:focus-visible,.zdl-target-input:focus-visible,.zdl-config-text:focus-visible{outline:2px solid #a6c0f7;outline-offset:2px}
 @media(max-width:380px){.zdl-panel{padding:14px}.zdl-header{column-gap:8px}.zdl-title-wrap{gap:7px}.zdl-title-icon{width:30px;height:30px;flex-basis:30px}.zdl-title-text h3{font-size:14px}.zdl-btn-group{gap:2px}.zdl-header .zdl-icon-btn{width:26px;height:26px;flex-basis:26px}.zdl-delivery-target{gap:6px}.zdl-settings-open{padding:5px 8px}.zdl-settings-panel{padding:14px}}
-@media(prefers-reduced-motion:reduce){.zdl-panel *,.zdl-settings-panel *,.zdl-history-panel *{transition:none!important}.zdl-entry,.zdl-entry-icon::after{animation:none}}
+@media(prefers-reduced-motion:reduce){.zdl-panel *,.zdl-settings-panel *,.zdl-history-panel *{transition:none!important}.zdl-mini-icon,.zdl-mini-icon::after,.zdl-settings-panel,.zdl-history-panel,.zdl-notify{animation:none!important;transition:none!important}.zdl-entry,.zdl-entry-icon::after{animation:none}}
 
 `;
 
