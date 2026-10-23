@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.1.0
+// @version      1.2.0
 // @description  求职工具！Yangshengzhou开发用于提高BOSS直聘投递效率，批量沟通，高效求职。安装后打开 BOSS 直聘「职位」页使用
 // @author       Yangshengzhou
 // @match        https://www.zhipin.com/*
@@ -25,9 +25,6 @@
     DAILY_LIMIT: 150,
     WORK_DAYS_PER_MONTH: 24,
 
-    DELAYS: {
-      SHORT: 30,
-    },
     MAX_LOG_ENTRIES: 100,
     DETAIL_TIMEOUT: 8000,
   };
@@ -67,7 +64,7 @@
 
     ui: {
       isMinimized: false,
-      isPinned: getStoredJSON("panelPinned", false),
+      isPinned: getStoredJSON("panelPinned", true),
     },
 
     settings: {
@@ -285,7 +282,7 @@
 
     render() {
       if (elements.subtitleEl) elements.subtitleEl.textContent = state.account.id
-        ? `账号 ${this.maskUid(state.account.id)} · 今日 ${state.delivery.dailyCount} 次 · 累计 ${state.delivery.totalCount} 次`
+        ? `账号 ${this.maskUid(state.account.id)} · 今日 ${state.delivery.dailyCount}/${state.targetCount} 次 · 累计 ${state.delivery.totalCount} 次`
         : "尚未识别到账号";
       if (elements.machineStatsEl) elements.machineStatsEl.textContent =
         `本机 · 今日 ${state.machineDelivery.dailyCount} 次 · 累计 ${state.machineDelivery.totalCount} 次`;
@@ -368,13 +365,11 @@
 
   function minimizePanel() {
     state.ui.isMinimized = true;
-    state.ui.isPinned = false;
-    localStorage.setItem("panelPinned", false);
-    if (elements.pinBtn) {
-      elements.pinBtn.classList.remove("pinned");
-      elements.pinBtn.title = "固定面板";
-      elements.pinBtn.setAttribute("aria-label", "固定面板");
-      elements.pinBtn.setAttribute("aria-pressed", "false");
+    // 用户没拖动过小图标时，让它出现在面板原来的右上角，而不是远处的左下角。
+    if (!getStoredJSON("miniIconPos", null)) {
+      const rect = elements.panel.getBoundingClientRect();
+      elements.miniIcon.style.left = `${Math.max(8, rect.right - 48)}px`;
+      elements.miniIcon.style.bottom = `${Math.max(8, window.innerHeight - rect.top - 48)}px`;
     }
     elements.panel.style.display = "none";
     elements.miniIcon.style.display = "flex";
@@ -669,7 +664,9 @@
       elements.panel = this._createPanel();
 
       const header = this._createHeader();
-      const controls = this._createPageControls();
+      const controls = document.createElement("div");
+      controls.className = "zdl-delivery-controls";
+      controls.append(this._createDeliveryControls());
       elements.log = this._createLogger();
       const logSection = document.createElement("div");
       logSection.className = "zdl-log-section";
@@ -796,17 +793,6 @@
         </div>`;
       elements.subtitleEl = wrapper.querySelector("#zdl-subtitle");
       return wrapper;
-    },
-
-    _createPageControls() {
-      return this._createJobListControls();
-    },
-
-    _createJobListControls() {
-      const container = document.createElement("div");
-      container.className = "zdl-delivery-controls";
-      container.append(this._createDeliveryControls());
-      return container;
     },
 
     _createSettingsPanel() {
@@ -1194,6 +1180,7 @@
       previous.replaceWith(this._createFilterContainer());
       this._renderConfigTags();
       elements.targetInput.value = state.targetCount;
+      Delivery.render();
       document.getElementById("zdl-history-panel")?.remove();
     },
 
@@ -1312,6 +1299,7 @@
         state.targetCount = val;
         invalidateConfigUndo();
         localStorage.setItem("zdlTargetCount", val.toString());
+        Delivery.render();
       });
       const targetUnit = document.createElement("span");
       targetUnit.className = "zdl-target-unit";
@@ -1372,6 +1360,7 @@
         toggleBtn.textContent = "\u2212";
         toggleBtn.dataset.visible = "true";
         addBtn.textContent = editingIndex !== null ? "修改" : "添加";
+        checkInput();
         input.focus();
       };
 
@@ -1470,6 +1459,20 @@
       hint.className = "zdl-tag-hint";
       hint.innerHTML = "英文按整词匹配（java 不含 javascript）；末尾加 <code>*</code> 匹配前缀，如 <code>spring*</code>；"
         + "多种写法用 <code>|</code> 隔开，如 <code>前端|客户端</code>";
+
+      const hintHTML = hint.innerHTML;
+      const checkInput = () => {
+        const val = input.value.trim();
+        let invalid = false;
+        if (/[.*+?^${}()|[\]\\]/.test(val)) {
+          try { new RegExp(val); } catch (error) { invalid = true; }
+        }
+        if (invalid === hint.classList.contains("warn")) return;
+        hint.classList.toggle("warn", invalid);
+        if (invalid) hint.textContent = "这不是有效的正则写法，会按普通文字匹配";
+        else hint.innerHTML = hintHTML;
+      };
+      input.addEventListener("input", checkInput);
 
       inputRow.append(input, addBtn, hint);
       section.append(tagRow, inputRow);
@@ -1692,47 +1695,34 @@
     },
 
     _makeDraggable(panel) {
-      // 注册在 document 上的 mousemove/mouseup 监听器在整个页面生命周期内持续存在。
-      // 对于单页运行的 UserScript 而言这是可接受的，无需额外清理。
       // 筛选div、日志div、缩放手柄及其内部不可拖动
       const NO_DRAG = ".zdl-delivery-controls, .zdl-log-section, .zdl-stats-strip, .zdl-scroll-wrap, .zdl-log, .zdl-resize-handle, button, input, select, textarea, .zdl-tag, .zdl-status-chip, .zdl-collapse-header, .zdl-tag-add-trigger, .zdl-tag-remove, .zdl-salary-select, .zdl-salary-input";
-
-      let isDragging = false;
-      let startX = 0,
-        startY = 0;
-      let initialX = panel.offsetLeft,
-        initialY = panel.offsetTop;
 
       panel.addEventListener("mousedown", (e) => {
         if (e.button !== 0) return;
         if (e.target.closest(NO_DRAG)) return;
 
-        isDragging = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        initialX = panel.offsetLeft;
-        initialY = panel.offsetTop;
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const initialX = panel.offsetLeft;
+        const initialY = panel.offsetTop;
         panel.style.transition = "none";
         panel.style.zIndex = "2147483647";
-      });
 
-      document.addEventListener("mousemove", (e) => {
-        if (!isDragging) return;
-
-        const dx = e.clientX - startX;
-        const dy = e.clientY - startY;
-
-        panel.style.left = `${initialX + dx}px`;
-        panel.style.top = `${initialY + dy}px`;
-        panel.style.right = "auto";
-      });
-
-      document.addEventListener("mouseup", () => {
-        if (isDragging) {
-          isDragging = false;
+        // 只在拖动期间监听，松开即移除，反复打开面板也不会累积监听。
+        const onMove = (event) => {
+          panel.style.left = `${initialX + event.clientX - startX}px`;
+          panel.style.top = `${initialY + event.clientY - startY}px`;
+          panel.style.right = "auto";
+        };
+        const onUp = () => {
+          document.removeEventListener("mousemove", onMove);
+          document.removeEventListener("mouseup", onUp);
           panel.style.transition = "all 0.3s ease";
           panel.style.zIndex = "2147483646";
-        }
+        };
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
       });
     },
 
@@ -2407,8 +2397,100 @@
     setTimeout(() => (notification.style.opacity = "1"), 10);
     setTimeout(() => {
       notification.style.opacity = "0";
-      setTimeout(() => document.body.removeChild(notification), 300);
+      setTimeout(() => notification.remove(), 300);
     }, 2000);
+  }
+
+  // 记录各账号已沟通过的岗位 id，下次直接在粗筛阶段跳过，不再逐个点开。
+  const CONTACTED_JOBS_KEY = "zdlContactedJobsV1";
+  const CONTACTED_JOBS_LIMIT = 3000;
+  const ContactedJobs = {
+    idOf(card) {
+      const href = card.querySelector("a[href*='job_detail']")?.getAttribute("href") || "";
+      return href.match(/job_detail\/([^./?#]+)/)?.[1] || "";
+    },
+
+    _read() {
+      try {
+        const data = JSON.parse(localStorage.getItem(CONTACTED_JOBS_KEY) || "{}");
+        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      } catch (error) {
+        return {};
+      }
+    },
+
+    setFor(uid) {
+      const ids = this._read()[uid];
+      return new Set(Array.isArray(ids) ? ids : []);
+    },
+
+    add(uid, jobId) {
+      if (!uid || !jobId) return;
+      const data = this._read();
+      const ids = Array.isArray(data[uid]) ? data[uid] : [];
+      if (ids.includes(jobId)) return;
+      ids.push(jobId);
+      data[uid] = ids.slice(-CONTACTED_JOBS_LIMIT);
+      try { localStorage.setItem(CONTACTED_JOBS_KEY, JSON.stringify(data)); } catch (error) {}
+    },
+  };
+
+  function readCardInfo(card) {
+    return {
+      jobId: ContactedJobs.idOf(card),
+      title: card.querySelector(".job-name")?.textContent?.trim() || "",
+      company: card.querySelector(".boss-name")?.textContent?.trim() || "",
+      address: (card.querySelector(".job-address-desc")?.textContent
+        || card.querySelector(".company-location")?.textContent
+        || card.querySelector(".job-area")?.textContent || "").trim(),
+      salary: decodeSalary(card.querySelector(".job-salary")?.textContent?.trim() || ""),
+      logo: card.querySelector(".boss-logo img")?.src || "",
+      headhunter: (card.querySelector(".job-tag-icon")?.alt || "").includes("猎头"),
+    };
+  }
+
+  function salaryMatches(salaryText) {
+    const sf = state.salaryFilter;
+    const min = (sf.type === "range" || sf.type === "atLeast") && sf.min ? parseInt(sf.min, 10) : null;
+    const max = (sf.type === "range" || sf.type === "atMost") && sf.max ? parseInt(sf.max, 10) : null;
+    if (min === null && max === null) return true;
+    const parsed = parseSalaryRange(salaryText);
+    if (!parsed) return true;
+    return (min === null || parsed.max >= min) && (max === null || parsed.min <= max);
+  }
+
+  // 粗筛：返回不收集的原因，空字符串表示通过。
+  function coarseRejectReason(info, contacted) {
+    if (info.jobId && contacted?.has(info.jobId)) return "contacted";
+    if (info.headhunter) return "headhunter";
+    const title = info.title.toLowerCase();
+    const company = info.company.toLowerCase();
+    const address = info.address.toLowerCase();
+    if (state.blockedCompanies.some((kw) => matchKeyword(company, kw))) return "company";
+    if (state.coarseBlockedTags.some((kw) => matchKeyword(title, kw))) return "blocked";
+    if (!state.coarseRequiredTags.every((kw) => matchKeyword(title, kw))) return "required";
+    if (state.includeTags.length && !state.includeTags.some((kw) => matchKeyword(title, kw))) return "optional";
+    if (state.locationTags.length && !state.locationTags.some((kw) => matchKeyword(address, kw))) return "location";
+    if (!salaryMatches(info.salary)) return "salary";
+    return "";
+  }
+
+  const NOT_DETAIL = "li.job-card-box, #boss-pro-panel, .zdl-settings-panel, .zdl-history-panel";
+
+  function getDetailRoot() {
+    return document.querySelector(".job-detail-body .desc")?.closest(".job-detail-container, .job-detail-box") || document;
+  }
+
+  // 优先在右侧详情区域里找；找不到时在整页找，但排除左侧列表卡片和脚本自己的面板。
+  function findInDetail(selector) {
+    const root = getDetailRoot();
+    const inRoot = root !== document ? root.querySelector(selector) : null;
+    return inRoot || Array.from(document.querySelectorAll(selector)).find((el) => !el.closest(NOT_DETAIL)) || null;
+  }
+
+  function highlightCard(card) {
+    document.querySelectorAll(".zdl-current-card").forEach((el) => el.classList.remove("zdl-current-card"));
+    card?.classList.add("zdl-current-card");
   }
 
   const Core = {
@@ -2473,53 +2555,9 @@
         }
 
         const countFiltered = () => {
-          const cards = document.querySelectorAll(cardSelector);
-          return Array.from(cards).filter((card) => {
-            if (card.dataset.zdlProcessed === run.uid) return false;
-            const title = card.querySelector(".job-name")?.textContent?.toLowerCase() || "";
-            const addressText = (card.querySelector(".job-address-desc")?.textContent
-              || card.querySelector(".company-location")?.textContent
-              || card.querySelector(".job-area")?.textContent || "").toLowerCase().trim();
-            const altText = (card.querySelector(".job-tag-icon") || {}).alt || "";
-
-            const requiredMatch = state.coarseRequiredTags.length === 0
-              || state.coarseRequiredTags.every((kw) => kw && matchKeyword(title, kw));
-            const optionalMatch = state.includeTags.length === 0
-              || state.includeTags.some((kw) => kw && matchKeyword(title, kw));
-            const locationMatch = state.locationTags.length === 0
-              || state.locationTags.some((kw) => kw && matchKeyword(addressText, kw));
-            const excludeHeadhunter = !altText.includes("猎头");
-
-            let salaryMatch = true;
-            const sf = state.salaryFilter;
-            const needCheck = ((sf.type === "range" || sf.type === "atLeast") && sf.min)
-                           || ((sf.type === "range" || sf.type === "atMost") && sf.max);
-            if (needCheck) {
-              const salaryEl = card.querySelector(".job-salary");
-              if (salaryEl) {
-                const decoded = decodeSalary(salaryEl.textContent.trim());
-                const parsed = parseSalaryRange(decoded);
-                if (parsed) {
-                  if (sf.type === "range") {
-                    const rMin = sf.min ? parseInt(sf.min) : 0;
-                    const rMax = sf.max ? parseInt(sf.max) : Infinity;
-                    salaryMatch = parsed.min <= rMax && rMin <= parsed.max;
-                  } else if (sf.type === "atLeast") {
-                    salaryMatch = !sf.min || parsed.max >= parseInt(sf.min);
-                  } else if (sf.type === "atMost") {
-                    salaryMatch = !sf.max || parsed.min <= parseInt(sf.max);
-                  }
-                }
-              }
-            }
-
-            const companyBlocked = state.blockedCompanies.length > 0
-              && state.blockedCompanies.some((kw) => kw && matchKeyword((card.querySelector(".boss-name")?.textContent?.trim() || "").toLowerCase(), kw));
-            const coarseBlockedMatch = state.coarseBlockedTags.length > 0
-              && state.coarseBlockedTags.some((kw) => kw && matchKeyword(title, kw));
-
-            return !companyBlocked && !coarseBlockedMatch && requiredMatch && optionalMatch && locationMatch && excludeHeadhunter && salaryMatch;
-          }).length;
+          const contacted = ContactedJobs.setFor(run.uid);
+          return Array.from(document.querySelectorAll(cardSelector)).filter((card) =>
+            card.dataset.zdlProcessed !== run.uid && !coarseRejectReason(readCardInfo(card), contacted)).length;
         };
 
         const scrollStep = async () => {
@@ -2573,83 +2611,29 @@
     async processJobList(run) {
       if (!Delivery.isCurrent(run)) return;
       const activeStatusFilter = state.settings.recruiterActivityStatus;
-      //粗筛
+      // 粗筛：只看列表卡片上的信息
       if (!state.jobList || state.jobList.length === 0) {
-        state.jobList = Array.from(
-          document.querySelectorAll("li.job-card-box")
-        ).filter((card) => card.dataset.zdlProcessed !== run.uid).filter((card) => {
-          const title =
-            card.querySelector(".job-name")?.textContent?.toLowerCase() || "";
-
-          const addressRaw = (
-            card.querySelector(".job-address-desc")?.textContent ||
-            card.querySelector(".company-location")?.textContent ||
-            card.querySelector(".job-area")?.textContent ||
-            ""
-          ).trim();
-          card.__zdlAddress = addressRaw;
-          const addressText = addressRaw.toLowerCase();
-          const headhuntingElement = card.querySelector(".job-tag-icon");
-          const altText = headhuntingElement ? headhuntingElement.alt : "";
-
-          const requiredMatch =
-            state.coarseRequiredTags.length === 0 ||
-            state.coarseRequiredTags.every((kw) => kw && matchKeyword(title, kw));
-
-          const optionalMatch =
-            state.includeTags.length === 0 ||
-            state.includeTags.some((kw) => kw && matchKeyword(title, kw));
-
-          const locationMatch =
-            state.locationTags.length === 0 ||
-            state.locationTags.some(
-              (kw) => kw && matchKeyword(addressText, kw)
-            );
-
-          const excludeHeadhunterMatch = !altText.includes("猎头");
-
-          let salaryMatch = true;
-          const sf = state.salaryFilter;
-          const needCheck = ((sf.type === "range" || sf.type === "atLeast") && sf.min)
-                         || ((sf.type === "range" || sf.type === "atMost") && sf.max);
-          if (needCheck) {
-            const salaryEl = card.querySelector(".job-salary");
-            if (salaryEl) {
-              const decoded = decodeSalary(salaryEl.textContent.trim());
-              const parsed = parseSalaryRange(decoded);
-              if (parsed) {
-                if (sf.type === "range") {
-                  const rMin = sf.min ? parseInt(sf.min) : 0;
-                  const rMax = sf.max ? parseInt(sf.max) : Infinity;
-                  salaryMatch = parsed.min <= rMax && rMin <= parsed.max;
-                } else if (sf.type === "atLeast") {
-                  salaryMatch = !sf.min || parsed.max >= parseInt(sf.min);
-                } else if (sf.type === "atMost") {
-                  salaryMatch = !sf.max || parsed.min <= parseInt(sf.max);
-                }
-              }
-            }
+        const contacted = ContactedJobs.setFor(run.uid);
+        const cards = document.querySelectorAll("li.job-card-box");
+        let skippedContacted = 0;
+        state.jobList = [];
+        cards.forEach((card) => {
+          if (card.dataset.zdlProcessed === run.uid) return;
+          const info = readCardInfo(card);
+          const reason = coarseRejectReason(info, contacted);
+          if (reason === "contacted") {
+            skippedContacted++;
+            card.dataset.zdlProcessed = run.uid;
           }
-
-          const companyName = card.querySelector(".boss-name")?.textContent?.trim() || "";
-          const companyBlocked = state.blockedCompanies.length > 0 && state.blockedCompanies.some((kw) => kw && matchKeyword(companyName.toLowerCase(), kw));
-          const coarseBlockedMatch = state.coarseBlockedTags.length > 0 && state.coarseBlockedTags.some((kw) => kw && matchKeyword(title, kw));
-
-          return !companyBlocked && !coarseBlockedMatch && requiredMatch && optionalMatch && locationMatch && excludeHeadhunterMatch && salaryMatch;
-        }).map((card) => {
-          return {
-            el: card,
-            company: card.querySelector(".boss-name")?.textContent?.trim() || "",
-            logo: card.querySelector(".boss-logo img")?.src || "",
-            job: card.querySelector(".job-name")?.textContent?.trim() || "",
-            salary: decodeSalary(card.querySelector(".job-salary")?.textContent?.trim() || ""),
-            address: card.__zdlAddress || "",
-          };
+          if (reason) return;
+          state.jobList.push({
+            el: card, jobId: info.jobId, company: info.company, logo: info.logo,
+            job: info.title, salary: info.salary, address: info.address,
+          });
         });
 
-
-        const totalCards = document.querySelectorAll("li.job-card-box").length;
-        this.log(`筛选完成，共 ${totalCards} 个岗位，匹配 ${state.jobList.length} 个`);
+        const contactedNote = skippedContacted ? `，跳过已沟通过的 ${skippedContacted} 个` : "";
+        this.log(`筛选完成，共 ${cards.length} 个岗位，匹配 ${state.jobList.length} 个${contactedNote}`);
         if (!state.jobList.length) {
           this.log("没有符合条件的职位");
           stopProcess(run);
@@ -2662,135 +2646,118 @@
         return;
       }
 
-      //细筛
+      // 细筛：打开详情后判断
       const item = state.jobList[state.currentIndex];
       const cardEl = item.el;
-      const roundTotal = state.jobList.length;
-      const cumulativeTotal = state.jobIndexOffset + roundTotal;
+      const cumulativeTotal = state.jobIndexOffset + state.jobList.length;
       const idx = state.jobIndexOffset + state.currentIndex + 1;
-      const info = `[${item.address}][${item.company}][${item.job}][${item.salary}]`;
+      const prefix = `第${idx}/${cumulativeTotal}个，[${item.address}][${item.company}][${item.job}][${item.salary}]`;
+      const skip = (message, key = message) => {
+        this.log(`${prefix}，${message}，已跳过`);
+        run.skips[key] = (run.skips[key] || 0) + 1;
+        state.currentIndex++;
+      };
       cardEl.dataset.zdlProcessed = run.uid;
+      highlightCard(cardEl);
       const detailReady = await this.openDetail(item, run);
       if (!Delivery.isCurrent(run)) return;
-      if (!detailReady) {
-        this.log(`第${idx}/${cumulativeTotal}个，${info}，详情加载超时，已跳过`);
-        state.currentIndex++;
-        return;
-      }
+      if (!detailReady) return skip("详情加载超时");
 
       let activeTime = "未知";
-      const onlineTag = document.querySelector(".boss-online-tag");
+      const onlineTag = findInDetail(".boss-online-tag");
       if (onlineTag && onlineTag.textContent.trim() === "在线") {
         activeTime = "在线";
       } else {
-        const activeTimeElement = document.querySelector(".boss-active-time");
-        activeTime = activeTimeElement?.textContent?.trim() || "未知";
+        activeTime = findInDetail(".boss-active-time")?.textContent?.trim() || "未知";
       }
-
       if (activeStatusFilter.length > 0 && !activeStatusFilter.includes(activeTime)) {
-        this.log(`第${idx}/${cumulativeTotal}个，${info}，招聘者"${activeTime}"，已跳过`);
-        state.currentIndex++;
-        return;
+        return skip(`招聘者"${activeTime}"`, "招聘者活跃状态不符");
       }
 
       let matchReason = "";
       if (state.detailBlockedTags.length || state.detailRequiredTags.length || state.detailOptionalTags.length || state.recruiterBlockedTags.length) {
-        const descEl = document.querySelector(".job-detail-body .desc");
-        const descText = cleanDesc(descEl).toLowerCase();
+        const descText = cleanDesc(document.querySelector(".job-detail-body .desc")).toLowerCase();
 
-        // 禁止关键词：只匹配 desc（支持正则）
-        if (state.detailBlockedTags.length) {
-          const hitBlocked = state.detailBlockedTags.find((kw) => matchKeyword(descText, kw));
-          if (hitBlocked) {
-            this.log(`第${idx}/${cumulativeTotal}个，${info}，命中禁止关键词"${hitBlocked}"，已跳过`);
-            state.currentIndex++;
-            return;
-          }
-        }
+        // 排除词：只匹配职位描述
+        const hitBlocked = state.detailBlockedTags.find((kw) => matchKeyword(descText, kw));
+        if (hitBlocked) return skip(`命中排除词"${hitBlocked}"`, `详情排除"${hitBlocked}"`);
 
-        // 必须/可选关键词：四源匹配（job-label-list、desc、.job-name、.tag-list）
-        // 限定在详情面板内查询，避免左侧岗位列表的标签污染
+        // 必须/任一：匹配职位描述、职位标签和职位名，只在详情区域内取，避免左侧列表干扰
         if (state.detailRequiredTags.length || state.detailOptionalTags.length) {
-          const detailScope = descEl ? (descEl.closest(".job-detail-container") || document) : document;
-          const labels = Array.from(detailScope.querySelectorAll(".job-label-list li"))
+          const root = getDetailRoot();
+          const join = (selector) => Array.from(root.querySelectorAll(selector))
             .map((li) => li.textContent.trim().toLowerCase()).join(" ");
-          const jobName = (detailScope.querySelector(".job-name")?.textContent || "").toLowerCase();
-          const tagList = Array.from(detailScope.querySelectorAll(".tag-list li"))
-            .map((li) => li.textContent.trim().toLowerCase()).join(" ");
-          const wideText = labels + " " + descText + " " + jobName + " " + tagList;
+          const jobName = (findInDetail(".job-name")?.textContent || "").toLowerCase();
+          const wideText = [join(".job-label-list li"), descText, jobName, join(".tag-list li")].join(" ");
 
-          if (state.detailRequiredTags.length) {
-            const missedRequired = state.detailRequiredTags.find((kw) => !matchKeyword(wideText, kw));
-            if (missedRequired) {
-              this.log(`第${idx}/${cumulativeTotal}个，${info}，缺必须关键词"${missedRequired}"，已跳过`);
-              state.currentIndex++;
-              return;
-            }
-            const matchedRequired = state.detailRequiredTags.filter((kw) => matchKeyword(wideText, kw));
-            matchReason = (matchReason ? matchReason + "；" : "") + "必须\"" + matchedRequired.join("、") + "\"";
-          }
+          const missedRequired = state.detailRequiredTags.find((kw) => !matchKeyword(wideText, kw));
+          if (missedRequired) return skip(`缺少必须词"${missedRequired}"`, `缺少"${missedRequired}"`);
+          if (state.detailRequiredTags.length) matchReason = `必须"${state.detailRequiredTags.join("、")}"`;
 
           if (state.detailOptionalTags.length) {
             const matchedOptional = state.detailOptionalTags.filter((kw) => matchKeyword(wideText, kw));
-            if (!matchedOptional.length) {
-              this.log(`第${idx}/${cumulativeTotal}个，${info}，无匹配可选关键词，已跳过`);
-              state.currentIndex++;
-              return;
-            }
-            matchReason = (matchReason ? matchReason + "；" : "") + "可选\"" + matchedOptional.join("、") + "\"";
+            if (!matchedOptional.length) return skip("详情没有命中任一关键词");
+            matchReason = (matchReason ? matchReason + "；" : "") + `任一"${matchedOptional.join("、")}"`;
           }
         }
 
         if (state.recruiterBlockedTags.length) {
-          const bossInfo = document.querySelector(".boss-info-attr");
-          const bossText = bossInfo ? bossInfo.textContent.trim().toLowerCase() : "";
+          const bossText = (findInDetail(".boss-info-attr")?.textContent || "").trim().toLowerCase();
           const hitRecruiter = state.recruiterBlockedTags.find((kw) => matchKeyword(bossText, kw));
-          if (hitRecruiter) {
-            this.log(`第${idx}/${cumulativeTotal}个，${info}，招聘者职位命中"${hitRecruiter}"，已跳过`);
-            state.currentIndex++;
-            return;
-          }
+          if (hitRecruiter) return skip(`招聘者职位命中"${hitRecruiter}"`, `招聘者职位"${hitRecruiter}"`);
         }
+      }
+
+      const chatBtn = findInDetail("a.op-btn-chat");
+      const btnText = chatBtn?.textContent.trim() || "";
+      if (btnText !== "立即沟通") {
+        if (btnText === "继续沟通") {
+          ContactedJobs.add(run.uid, item.jobId);
+          return skip("之前已沟通过", "已沟通过");
+        }
+        return skip("没有沟通按钮");
       }
 
       state.currentIndex++;
-
-      const chatBtn = document.querySelector("a.op-btn-chat");
-      if (chatBtn) {
-        const btnText = chatBtn.textContent.trim();
-        if (btnText === "立即沟通") {
-          if (!Delivery.isCurrent(run)) return;
-          if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) {
-            this.log(`第${idx}/${cumulativeTotal}个，${info}，已达今日目标 ${state.targetCount} 次，自动停止`);
-            stopProcess(run);
-            return;
-          }
-          chatBtn.click();
-
-          // 检测 BOSS 限制弹窗（120 提醒 / 150 上限）
-          const isLimitReached = await this.handleLimitDialogs(run);
-          if (!Delivery.isCurrent(run, true)) return;
-          if (isLimitReached) {
-            this.log(`第${idx}/${cumulativeTotal}个，${info}，BOSS限制：今日沟通已达150次上限，自动停止`);
-            stopProcess(run);
-            return;
-          }
-
-          const confirmed = await this.handleGreetingModal(item.company, item.logo, run);
-          if (confirmed) {
-            const reason = matchReason ? `，匹配 ${matchReason}` : "";
-            this.log(`第${idx}/${cumulativeTotal}个，${info}，已投递${reason}`);
-          } else if (Delivery.isCurrent(run, true)) {
-            this.log(`第${idx}/${cumulativeTotal}个，${info}，未确认投递成功，未增加次数`);
-          }
-          return;
-        }
+      if (!Delivery.isCurrent(run)) return;
+      if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) {
+        this.log(`${prefix}，已达今日目标 ${state.targetCount} 次，自动停止`);
+        stopProcess(run);
+        return;
       }
-      this.log(`第${idx}/${cumulativeTotal}个，${info}，已跳过（无沟通按钮）`);
+      chatBtn.click();
+
+      // 检测 BOSS 限制弹窗（120 提醒 / 150 上限）
+      const isLimitReached = await this.handleLimitDialogs(run);
+      if (!Delivery.isCurrent(run, true)) return;
+      if (isLimitReached) {
+        this.log(`${prefix}，BOSS限制：今日沟通已达150次上限，自动停止`);
+        stopProcess(run);
+        return;
+      }
+
+      const confirmed = await this.handleGreetingModal(item.company, item.logo, run);
+      if (confirmed) {
+        ContactedJobs.add(run.uid, item.jobId);
+        run.delivered++;
+        this.log(`${prefix}，已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
+      } else if (Delivery.isCurrent(run, true)) {
+        this.log(`${prefix}，未确认投递成功，未增加次数`);
+      }
+    },
+
+    // 一次投递任务结束后汇总结果，方便看出哪条规则过严。
+    logRunSummary(run) {
+      const skips = Object.entries(run.skips).sort((a, b) => b[1] - a[1]);
+      const skipped = skips.reduce((sum, [, n]) => sum + n, 0);
+      if (!run.delivered && !skipped) return;
+      const top = skips.slice(0, 6).map(([key, n]) => `${key} ${n}`).join("、");
+      const more = skips.length > 6 ? " 等" : "";
+      this.log(`本次共投递 ${run.delivered} 个，详情页跳过 ${skipped} 个${top ? `（${top}${more}）` : ""}`);
     },
 
     // 点开岗位并等右侧详情切换到这个岗位，避免用上一个岗位的详情做筛选。
-    // 判断依据：详情标题与卡片职位名一致，且详情正文已变化（本来就显示该岗位时除外）。
+    // 判断依据：详情标题与卡片职位名一致，且标题或正文已变化（本来就显示该岗位时除外）。
     async openDetail(item, run) {
       const normalize = (text) => (text || "").replace(/\s+/g, "").toLowerCase();
       const wanted = normalize(item.job);
@@ -2802,6 +2769,7 @@
         return !!title && !!wanted && (title.includes(wanted) || wanted.includes(title));
       };
       const previousDesc = readDesc();
+      const previousTitle = normalize(detailTitle()?.textContent);
       const alreadyShown = titleMatches(detailTitle());
       const startedAt = Date.now();
 
@@ -2814,7 +2782,8 @@
         if (!desc) return false;
         const title = detailTitle();
         if (title && !titleMatches(title)) return false;
-        return alreadyShown || desc !== previousDesc;
+        const titleChanged = !!title && normalize(title.textContent) !== previousTitle;
+        return alreadyShown || titleChanged || desc !== previousDesc;
       }, CONFIG.DETAIL_TIMEOUT, 200);
 
       // 保留最短操作间隔，不因页面加载快而点得过快。
@@ -2891,36 +2860,6 @@
       return true;
     },
 
-    async simulateClick(element) {
-      if (!element) return;
-
-      const rect = element.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2;
-
-      const dispatchMouseEvent = (type, options = {}) => {
-        const event = new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          view: document.defaultView,
-          clientX: x,
-          clientY: y,
-          ...options,
-        });
-        element.dispatchEvent(event);
-      };
-
-      dispatchMouseEvent("mouseover");
-      await this.delay(CONFIG.DELAYS.SHORT);
-      dispatchMouseEvent("mousemove");
-      await this.delay(CONFIG.DELAYS.SHORT);
-      dispatchMouseEvent("mousedown", { button: 0 });
-      await this.delay(CONFIG.DELAYS.SHORT);
-      dispatchMouseEvent("mouseup", { button: 0 });
-      await this.delay(CONFIG.DELAYS.SHORT);
-      dispatchMouseEvent("click", { button: 0 });
-    },
-
     async delay(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     },
@@ -2937,7 +2876,7 @@
       return null;
     },
 
-renderLogItem(logEntry) {
+    renderLogItem(logEntry) {
       const item = document.createElement("div");
       item.className = "zdl-log-item";
       const html = logEntry
@@ -2989,7 +2928,7 @@ renderLogItem(logEntry) {
       showNotification("当前浏览器不支持投递任务锁，请使用新版 Chrome 或 Edge", "error");
       return;
     }
-    const run = { uid: state.account.id, started: false, cancelled: false };
+    const run = { uid: state.account.id, started: false, cancelled: false, delivered: 0, skips: {} };
     state.activeRun = run;
     Delivery.render();
     try {
@@ -3031,6 +2970,8 @@ renderLogItem(logEntry) {
       Core.log(`投递已停止：${state.account.error || error.message}`);
       showNotification(state.account.error || error.message, "error");
     } finally {
+      highlightCard(null);
+      if (run.started) Core.logRunSummary(run);
       if (state.activeRun === run) {
         state.isRunning = false;
         state.activeRun = null;
@@ -3058,7 +2999,8 @@ renderLogItem(logEntry) {
         if (event.key === null || CONFIG_STORAGE_KEYS.includes(event.key) || event.key === CONFIG_UNDO_KEY) UI._updateConfigControls();
       });
       window.addEventListener("focus", () => Delivery.sync());
-      setInterval(() => Delivery.sync(), 1500);
+      setInterval(() => { if (!document.hidden) Delivery.sync(); }, 1500);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) Delivery.sync(); });
       // 恢复持久化的日志条目到 DOM
       const hasHistory = state.logEntries.length > 0;
       const logPanel = document.querySelector("#pro-log");
@@ -3152,12 +3094,9 @@ renderLogItem(logEntry) {
 .zdl-title-text h3{margin:0;color:var(--zdl-ink);font-weight:600;font-size:16px;line-height:1.4;white-space:nowrap}
 .zdl-title-text span{font-size:12px;color:var(--zdl-neutral)}
 .zdl-filter-container{background:transparent;padding:0;margin:0}
-.zdl-filter-row{display:flex;gap:10px;margin-bottom:12px}
-.zdl-filter-col{flex:1}
 .zdl-filter-label{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px;line-height:1.6;flex-shrink:0}
 .zdl-filter-title{font-weight:500;color:#43536c}
 .zdl-filter-desc{color:#98a4b5;font-size:11px}
-.zdl-filter-input{width:100%;padding:8px 10px;border-radius:8px;border:1px solid #d1d5db;font-size:14px;box-shadow:0 1px 2px rgba(0,0,0,.05);transition:all .2s ease}
 .zdl-btn-start{box-sizing:border-box;width:100%;min-height:42px;padding:10px 16px;background:var(--zdl-primary);color:#fff;border:none;border-radius:9px;cursor:pointer;font-family:inherit;font-size:14px;font-weight:500;line-height:1.5;transition:background .15s,box-shadow .15s;display:flex;justify-content:center;align-items:center;box-shadow:0 3px 8px rgba(var(--zdl-primary-rgb),.15);margin:0 auto}
 .zdl-btn-start:hover{background:#255fd3;box-shadow:0 4px 12px rgba(var(--zdl-primary-rgb),.22)}
 .zdl-icon-btn{box-sizing:border-box;width:28px;height:28px;flex:0 0 28px;padding:5px;border-radius:7px;border:1px solid transparent;background:transparent;cursor:pointer;display:flex;justify-content:center;align-items:center;color:#7b8aa1;transition:background .15s,color .15s,border-color .15s}
@@ -3174,8 +3113,6 @@ renderLogItem(logEntry) {
 .zdl-scroll-wrap::-webkit-scrollbar-track{background:transparent;border-radius:4px}
 .zdl-scroll-wrap::-webkit-scrollbar-thumb{background:#c5d1e2;border-radius:4px}
 .zdl-resize-handle{position:absolute;right:4px;bottom:4px;width:12px;height:12px;cursor:nwse-resize;opacity:.55;background:linear-gradient(135deg,transparent 50%,#b4c1d4 50%,transparent 55%,#b4c1d4 55%,transparent 60%,#b4c1d4 60%);z-index:2}
-.zdl-footer{text-align:center;font-size:.8em;color:var(--zdl-neutral);padding:0;border-top:1px solid var(--zdl-accent);margin-top:auto}
-.zdl-footer-stats{display:flex;justify-content:space-around;margin-bottom:15px}
 .zdl-mini-icon{width:40px;height:40px;position:fixed;bottom:40px;left:40px;background:var(--zdl-primary);border-radius:50%;box-shadow:0 6px 16px rgba(var(--zdl-primary-rgb),.4);cursor:pointer;display:none;justify-content:center;align-items:center;color:#fff;z-index:2147483647;transition:all .3s ease;overflow:hidden;user-select:none}
 .zdl-status-tags{display:contents}
 .zdl-status-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;font-family:inherit;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s,color .15s,border-color .15s;white-space:nowrap;background:#fff;color:#7b8aa1;border:1px solid var(--zdl-border);user-select:none}
@@ -3211,6 +3148,8 @@ renderLogItem(logEntry) {
 .zdl-tag-remove:hover{background:rgba(23,36,58,.08);opacity:1}
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
 .zdl-tag-hint{flex-basis:100%;margin:0;color:#98a4b5;font-size:11px;line-height:1.6}
+.zdl-tag-hint.warn{color:#b45309}
+li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-offset:-2px;border-radius:12px}
 .zdl-tag-hint code{padding:0 3px;border-radius:3px;background:var(--zdl-secondary);color:#53647e;font:11px ui-monospace,monospace}
 .zdl-tag-input{box-sizing:border-box;min-width:0;flex:1;padding:7px 9px;border:1px solid var(--zdl-border);border-radius:6px;font-size:12px;line-height:1.5;background:#fff;color:var(--zdl-ink);outline:none;transition:border-color .15s,box-shadow .15s}
 .zdl-tag-input:focus{border-color:#a6c0f7;box-shadow:0 0 0 2px var(--zdl-accent)}
