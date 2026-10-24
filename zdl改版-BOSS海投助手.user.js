@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.9.1
+// @version      1.10.0
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
 // @match        https://www.zhipin.com/*
@@ -134,6 +134,9 @@
     configFeedback: null,
     configApplyBtn: null,
     configFallback: null,
+    wizardDialog: null,
+    wizardBtn: null,
+    emptyRulesHint: null,
   };
 
   const DELIVERY_STATS_KEY = "zdlDeliveryStatsV1";
@@ -387,6 +390,7 @@
     github: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>',
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.6v12.8a1 1 0 0 0 1.53.85l10.1-6.4a1 1 0 0 0 0-1.7L9.53 4.75A1 1 0 0 0 8 5.6z"/></svg>',
     stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6.5" y="6.5" width="11" height="11" rx="2.2"/></svg>',
+    wand: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m4 20 10-10M14 4v2M14 12v2M10 8h2M18 8h2M17 5l1-1M17 11l1 1"/></svg>',
     chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>',
     settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h5m4 0h7M4 17h7m4 0h5"/><circle cx="11" cy="7" r="2"/><circle cx="13" cy="17" r="2"/></svg>',
   };
@@ -469,6 +473,7 @@
         if (!e.isTrusted) return;
         if (document.getElementById("zdl-tutorial")?.contains(e.target)) return;
         if (elements.configDialog?.contains(e.target)) return;
+        if (elements.wizardDialog?.contains(e.target)) return;
         if (elements.settingsPanel?.contains(e.target)) return;
         if (elements.accountsPanel?.contains(e.target)) return;
         if (elements.panel && !elements.panel.contains(e.target)) {
@@ -483,7 +488,7 @@
         minimizePanel();
       });
       window.addEventListener("keydown", (e) => {
-        if (elements.configDialog.open) return;
+        if (elements.configDialog.open || elements.wizardDialog?.open) return;
         if (e.key === "Escape" && !document.getElementById("zdl-tutorial")
           && (!elements.settingsPanel.hidden || !elements.accountsPanel.hidden)) {
           e.preventDefault();
@@ -534,7 +539,7 @@
       const steps = [
         { title: "固定面板", text: "固定后，点击页面也不会收起。", target: () => elements.pinBtn },
         { title: "打开筛选设置", text: "点这里设置岗位条件。", target: () => elements.settingsBtn },
-        { title: "用求职向导生成规则", text: "选身份、方向和技术栈，一键生成筛选规则，不用自己写关键词。", settings: true, target: () => elements.settingsPanel.querySelector(".zdl-wizard-head") },
+        { title: "第一次用？试试求职向导", text: "选身份、方向和技术栈，快速生成基础规则；之后在筛选设置里微调。", settings: true, target: () => elements.wizardBtn },
         { title: "添加职位关键词", text: "职位名「必须包含」要全部命中，「包含任一」命中一个即可。", settings: true, section: 1, target: () => sectionButton(elements.coarseRequiredInput) },
         { title: "排除不想要的岗位", text: "职位详情命中排除词，就会跳过。", settings: true, section: 2, target: () => sectionButton(elements.detailBlockedInput) },
         { title: "筛选招聘者", text: "勾选你接受的活跃状态。", settings: true, section: 3, target: () => settingsPanel.querySelector("#recruiter-status-select .zdl-status-chip") },
@@ -742,6 +747,7 @@
       elements.settingsPanel?.remove();
       elements.accountsPanel?.remove();
       elements.configDialog?.remove();
+      elements.wizardDialog?.remove();
       this._accountsSnapshot = "";
       collapseInstances.length = 0;
 
@@ -780,6 +786,8 @@
       elements.accountsPanel = this._createAccountsPanel();
       document.body.appendChild(elements.accountsPanel);
       elements.configDialog = this._createConfigImportDialog();
+      elements.wizardDialog = this._createWizardDialog();
+      document.body.appendChild(elements.wizardDialog);
       document.body.appendChild(elements.configDialog);
 
       const savedSize = getStoredJSON("panelSize", null);
@@ -931,13 +939,27 @@
       title.textContent = "筛选设置";
       const close = this._createIconButton(UI_ICONS.close, () => this._hideSettingsPanel(true), "关闭筛选设置");
       close.setAttribute("aria-label", "关闭筛选设置");
-      header.append(title, close);
+      elements.wizardBtn = document.createElement("button");
+      elements.wizardBtn.type = "button";
+      elements.wizardBtn.className = "zdl-wizard-btn";
+      elements.wizardBtn.innerHTML = `${UI_ICONS.wand}<span>求职向导</span>`;
+      elements.wizardBtn.title = "第一次使用？选身份、方向和技术栈，快速生成基础规则";
+      elements.wizardBtn.addEventListener("click", () => this._openWizard());
+      const tools = document.createElement("div");
+      tools.className = "zdl-settings-tools";
+      tools.append(elements.wizardBtn, close);
+      header.append(title, tools);
       elements.settingsScroll = document.createElement("div");
       elements.settingsScroll.className = "zdl-scroll-wrap zdl-settings-scroll";
-      const advanced = document.createElement("div");
-      advanced.className = "zdl-advanced-heading";
-      advanced.innerHTML = "<span>高级设置</span><small>按条件逐项调整，向导生成的规则也在这里</small>";
-      elements.settingsScroll.append(this._createWizard(), advanced, this._createFilterContainer());
+      // 还没有任何规则时提示新手用向导；有规则后自动隐藏
+      elements.emptyRulesHint = document.createElement("div");
+      elements.emptyRulesHint.className = "zdl-empty-rules";
+      const hintText = document.createElement("span");
+      hintText.innerHTML = "<strong>还没有筛选规则</strong>第一次使用可以用求职向导，选几个选项就能生成基础规则";
+      const hintBtn = this._createTextButton("打开求职向导", () => this._openWizard());
+      hintBtn.className = "zdl-config-btn zdl-config-primary";
+      elements.emptyRulesHint.append(hintText, hintBtn);
+      elements.settingsScroll.append(elements.emptyRulesHint, this._createFilterContainer());
       panel.append(header, CoarsePreview.create(), elements.settingsScroll, this._createConfigControls());
       return panel;
     },
@@ -1384,28 +1406,29 @@
     },
 
     // 求职向导：几个选择题生成规则，应用前预览改动，应用后可在底部撤销
-    _createWizard() {
+    // 求职向导：弹窗里回答几个选择题生成基础规则，应用前预览改动，应用后可在底部撤销
+    _createWizardDialog() {
       const KEY = "zdlWizardAnswers";
       let answers = { ...defaultWizardAnswers(), ...getStoredJSON(KEY, {}) };
       const save = () => { try { localStorage.setItem(KEY, JSON.stringify(answers)); } catch (error) {} };
-      const hasRules = () => state.includeTags.length || state.coarseBlockedTags.length || state.coarseRequiredTags.length
-        || state.detailOptionalTags.length || state.detailRequiredTags.length || jobTypeFilterActive();
 
-      const root = document.createElement("section");
-      root.className = "zdl-wizard";
-      const head = document.createElement("button");
-      head.type = "button";
-      head.className = "zdl-wizard-head";
-      head.innerHTML = `<span class="zdl-wizard-mark">${UI_ICONS.settings}</span>
-        <span class="zdl-wizard-title"><strong>求职向导</strong><small>选几个选项，自动生成筛选规则</small></span>${UI_ICONS.chevron}`;
+      const dialog = document.createElement("dialog");
+      dialog.id = "zdl-wizard";
+      dialog.className = "zdl-import-dialog zdl-wizard";
+      dialog.setAttribute("aria-labelledby", "zdl-wizard-title");
+      const header = document.createElement("div");
+      header.className = "zdl-settings-header";
+      const heading = document.createElement("div");
+      heading.className = "zdl-wizard-heading";
+      heading.innerHTML = `<span class="zdl-wizard-mark">${UI_ICONS.wand}</span>
+        <span class="zdl-wizard-title"><strong id="zdl-wizard-title">求职向导</strong><small>选几个选项，快速生成基础筛选规则，之后可在筛选设置里微调</small></span>`;
+      const closeBtn = this._createIconButton(UI_ICONS.close, () => dialog.close(), "关闭求职向导");
+      header.append(heading, closeBtn);
       const body = document.createElement("div");
-      body.className = "zdl-wizard-body";
-      const setOpen = (open) => {
-        root.classList.toggle("open", open);
-        head.setAttribute("aria-expanded", String(open));
-        body.hidden = !open;
-      };
-      head.addEventListener("click", () => setOpen(body.hidden));
+      body.className = "zdl-wizard-body zdl-import-body";
+      dialog.addEventListener("cancel", (event) => { event.preventDefault(); dialog.close(); });
+      dialog.addEventListener("click", (event) => event.stopPropagation());
+      dialog.addEventListener("close", () => elements.wizardBtn?.focus({ preventScroll: true }));
 
       const chips = (options, isOn, toggle) => {
         const row = document.createElement("div");
@@ -1553,7 +1576,8 @@
             this._refreshConfigFilters();
             this._updateConfigControls();
             this._setConfigStatus(count ? "已按向导生成规则，可撤销" : "规则无变化");
-            setOpen(false);
+            dialog.close();
+            if (elements.settingsPanel.hidden) this._showSettingsPanel();
             CoarsePreview.render();
           } catch (error) {
             title.textContent = error.message;
@@ -1568,10 +1592,20 @@
       });
 
       body.append(step1, step2, step3, step4, actions, review);
-      root.append(head, body);
+      dialog.append(header, body);
       onChange();
-      setOpen(!hasRules());
-      return root;
+      dialog.zdlOpen = () => {
+        if (dialog.open) return;
+        onChange();
+        try { dialog.showModal(); } catch (error) { return; }
+        generate.focus({ preventScroll: true });
+      };
+      return dialog;
+    },
+
+    _openWizard() {
+      this._hideConfigImport(false);
+      elements.wizardDialog?.zdlOpen();
     },
 
     _createJobTypeSection() {
@@ -1655,6 +1689,7 @@
     },
 
     _refreshFilterCounts() {
+      if (elements.emptyRulesHint) elements.emptyRulesHint.hidden = hasFilterRules();
       collapseInstances.forEach((inst) => {
         if (!inst.countEl || !inst.count) return;
         const n = inst.count();
@@ -3146,6 +3181,10 @@
     minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
   });
 
+  const hasFilterRules = () => state.includeTags.length || state.coarseBlockedTags.length || state.coarseRequiredTags.length
+    || state.detailOptionalTags.length || state.detailRequiredTags.length || state.detailBlockedTags.length
+    || state.locationTags.length || state.blockedCompanies.length || state.recruiterIncludeTags.length || jobTypeFilterActive();
+
   // 由向导答案生成配置里向导负责的那几项；其他项（排除公司、工作地、详情排除、今日目标）保持不变
   function generateWizardConfig(answers) {
     const a = { ...defaultWizardAnswers(), ...answers };
@@ -4156,17 +4195,25 @@
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
 .zdl-tag-hint{flex-basis:100%;margin:0;color:var(--zdl-text-4);font-size:11px;line-height:1.6}
 .zdl-tag-hint.warn{color:#b45309}
-.zdl-wizard{margin-bottom:14px;border:1px solid #d6e3fb;border-radius:12px;background:linear-gradient(180deg,#f6f9ff 0%,#fff 70%);overflow:hidden}
 .zdl-wizard [hidden]{display:none!important}
-.zdl-wizard-head{display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;border:0;background:transparent;color:var(--zdl-ink);font:inherit;text-align:left;cursor:pointer}
-.zdl-wizard-head>svg{width:14px;height:14px;margin-left:auto;color:var(--zdl-text-4);transition:transform .2s}
-.zdl-wizard.open .zdl-wizard-head>svg{transform:rotate(90deg)}
+.zdl-wizard{width:min(540px,calc(100vw - 24px))}
+.zdl-wizard-heading{display:flex;align-items:center;gap:10px;min-width:0}
+.zdl-wizard-body{padding-right:4px}
+.zdl-wizard-body>.zdl-wizard-step:first-child{border-top:0;padding-top:2px}
+.zdl-settings-tools{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.zdl-wizard-btn{display:inline-flex;align-items:center;gap:5px;height:28px;padding:0 10px;border:1px solid #cfdcf8;border-radius:999px;background:var(--zdl-accent);color:var(--zdl-primary);font:inherit;font-size:12px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background .15s,border-color .15s}
+.zdl-wizard-btn:hover{border-color:#a9c2f5;background:#e3ecff}
+.zdl-wizard-btn svg{width:14px;height:14px}
+.zdl-empty-rules{display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:10px 12px;border:1px dashed #bcd0f6;border-radius:10px;background:var(--zdl-accent)}
+.zdl-empty-rules[hidden]{display:none}
+.zdl-empty-rules>span{flex:1;min-width:0;color:var(--zdl-text-2);font-size:12px;line-height:1.6}
+.zdl-empty-rules strong{display:block;color:var(--zdl-ink);font-size:13px;font-weight:600}
+.zdl-empty-rules .zdl-config-btn{flex-shrink:0}
 .zdl-wizard-mark{display:flex;width:28px;height:28px;flex:0 0 28px;box-sizing:border-box;padding:6px;border-radius:8px;background:var(--zdl-primary);color:#fff}
 .zdl-wizard-mark svg{width:100%;height:100%}
 .zdl-wizard-title{display:flex;flex-direction:column;min-width:0;line-height:1.45}
 .zdl-wizard-title strong{font-size:13px;font-weight:600}
 .zdl-wizard-title small{color:var(--zdl-text-3);font-size:11px}
-.zdl-wizard-body{padding:2px 12px 12px}
 .zdl-wizard-step{padding:10px 0;border-top:1px solid #e9eef7}
 .zdl-wizard-step-label{display:flex;align-items:baseline;gap:6px;margin-bottom:7px;color:var(--zdl-ink);font-size:12px;font-weight:500}
 .zdl-wizard-step-label small{color:var(--zdl-text-4);font-size:11px;font-weight:400}
@@ -4184,8 +4231,6 @@
 .zdl-wizard-review-title{margin:0 0 6px;color:var(--zdl-text-2);font-size:12px;line-height:1.6}
 .zdl-wizard-review-title.error{color:#dc2626}
 .zdl-wizard-review .zdl-wizard-actions{border-top:0;padding-top:8px}
-.zdl-advanced-heading{display:flex;align-items:baseline;gap:8px;margin:2px 2px 10px;color:var(--zdl-ink);font-size:12px;font-weight:600}
-.zdl-advanced-heading small{color:var(--zdl-text-4);font-size:11px;font-weight:400}
 .zdl-preview{display:flex;flex-direction:column;flex-shrink:0;max-height:min(46vh,420px);overflow:hidden;margin:0 0 12px;padding:9px 11px;border:1px solid var(--zdl-border);border-radius:9px;background:var(--zdl-secondary);color:var(--zdl-text-2);font-size:12px;line-height:1.6}
 .zdl-preview-head{display:flex;align-items:baseline;gap:8px}
 .zdl-preview-summary{flex:1;min-width:0}
