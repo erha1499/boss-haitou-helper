@@ -11,7 +11,7 @@
 // @homepageURL  https://github.com/erha1499/boss-haitou-helper
 // @license      AGPL-3.0-or-later
 // @icon         https://www.zhipin.com/favicon.ico
-// @updateURL    https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/zdl%E6%94%B9%E7%89%88-BOSS%E6%B5%B7%E6%8A%95%E5%8A%A9%E6%89%8B.user.js
-// @downloadURL  https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/zdl%E6%94%B9%E7%89%88-BOSS%E6%B5%B7%E6%8A%95%E5%8A%A9%E6%89%8B.user.js
+// @updateURL    https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/boss-haitou-helper.user.js
+// @downloadURL  https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/boss-haitou-helper.user.js
 // @noframes
 // ==/UserScript==

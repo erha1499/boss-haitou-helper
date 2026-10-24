@@ -20,7 +20,7 @@
 1. 安装任意一个脚本管理器：
    - [Tampermonkey（油猴）](https://www.tampermonkey.net/)：支持 Chrome、Edge、Firefox
    - [脚本猫 ScriptCat](https://scriptcat.org/)：支持 Chrome、Edge、Firefox，界面是中文
-2. 点击安装脚本：[zdl改版-BOSS海投助手.user.js](https://github.com/erha1499/boss-haitou-helper/raw/main/zdl%E6%94%B9%E7%89%88-BOSS%E6%B5%B7%E6%8A%95%E5%8A%A9%E6%89%8B.user.js)，在弹出的安装页面点「安装」
+2. 点击安装脚本：[boss-haitou-helper.user.js](https://github.com/erha1499/boss-haitou-helper/raw/main/boss-haitou-helper.user.js)，在弹出的安装页面点「安装」
 
 脚本会自动检查更新，也可以在脚本管理器里手动「检查更新」。
 
@@ -157,11 +157,11 @@ BOSS 的经验标签只有“在校生、应届生、经验不限、1年以内�
 
 ## 开发
 
-源码在 `src/` 下按模块拆开，用 [Rollup](https://rollupjs.org/) 打包成仓库根目录的单个 `.user.js`（脚本管理器从这个文件检查更新，所以构建结果也要提交）。需要 Node.js 22 以上。
+源码在 `src/` 下按模块拆开，用 [Rollup](https://rollupjs.org/) 打包成仓库根目录的 `boss-haitou-helper.user.js`（脚本管理器从这个文件检查更新，所以构建结果也要提交）。构建时会在旧文件名 `zdl改版-BOSS海投助手.user.js` 下写一份相同的副本，让从旧地址安装的用户也能更新过来，不要删。需要 Node.js 22 以上。
 
 ```bash
 npm install
-npm run build   # 生成 zdl改版-BOSS海投助手.user.js
+npm run build   # 生成 boss-haitou-helper.user.js
 npm test        # 单元测试和投递流程测试，同时检查 .user.js 是否已用最新源码构建
 ```
 

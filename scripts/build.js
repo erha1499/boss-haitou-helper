@@ -1,11 +1,14 @@
 // 把 src/ 打包成单个用户脚本，写到仓库根目录（脚本管理器从这个文件检查更新）。
+// 旧文件名下同时写一份相同的内容：从旧地址安装的用户更新一次后，脚本头里的更新地址就换成新文件名了。
 // 用法：npm run build；加 --check 只检查已提交的脚本是否是最新构建，不写文件。
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { rollup } from "rollup";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-export const OUTPUT_FILE = `${root}zdl改版-BOSS海投助手.user.js`;
+export const OUTPUT_FILE = `${root}boss-haitou-helper.user.js`;
+export const LEGACY_OUTPUT_FILE = `${root}zdl改版-BOSS海投助手.user.js`;
+const OUTPUT_FILES = [OUTPUT_FILE, LEGACY_OUTPUT_FILE];
 
 export async function buildScript() {
   const meta = (await readFile(`${root}src/meta.js`, "utf8")).trimEnd();
@@ -27,14 +30,16 @@ export async function buildScript() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const code = await buildScript();
   if (process.argv.includes("--check")) {
-    const current = await readFile(OUTPUT_FILE, "utf8").catch(() => "");
-    if (current !== code) {
-      console.error("用户脚本不是最新构建，请运行 npm run build");
-      process.exit(1);
+    for (const file of OUTPUT_FILES) {
+      const current = await readFile(file, "utf8").catch(() => "");
+      if (current !== code) {
+        console.error(`${file.slice(root.length)} 不是最新构建，请运行 npm run build`);
+        process.exit(1);
+      }
     }
     console.log("用户脚本已是最新构建");
   } else {
-    await writeFile(OUTPUT_FILE, code);
-    console.log(`已生成 ${OUTPUT_FILE.slice(root.length)}`);
+    for (const file of OUTPUT_FILES) await writeFile(file, code);
+    console.log(`已生成 ${OUTPUT_FILES.map((file) => file.slice(root.length)).join("、")}`);
   }
 }
