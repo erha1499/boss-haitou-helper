@@ -61,6 +61,13 @@ export async function openFakeBoss({ jobs, storage = {}, detailDelay = 40, detai
   w.setInterval = (fn, ms = 0, ...args) => realSetInterval(fn, Math.max(ms / SPEED, 1), ...args);
   w.Date.now = () => origin + (realNow() - origin) * SPEED;
 
+  // jsdom 没有实现 <dialog> 的弹出和关闭
+  w.HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  w.HTMLDialogElement.prototype.close = function () {
+    if (!this.hasAttribute("open")) return;
+    this.removeAttribute("open");
+    this.dispatchEvent(new w.Event("close"));
+  };
   w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
   w.scrollTo = () => {};
   w.Element.prototype.scrollIntoView = function () {};
@@ -130,13 +137,30 @@ export async function openFakeBoss({ jobs, storage = {}, detailDelay = 40, detai
 
   return {
     window: w, document: doc, errors, chats, logs,
-    // 点“开始投递”并等这次投递结束
-    async run() {
+    // 点“开始投递”并等这次投递结束。没设规则时会先弹确认框，默认点“仍然开始”；
+    // noRulesChoice 传按钮文字可以点别的，传 null 表示不处理（留着确认框）。
+    async run({ noRulesChoice = "仍然开始" } = {}) {
       const before = logs().length;
       await waitUntil(() => !startButton().disabled);
       startButton().click();
-      await waitUntil(() => logs().length > before && startButton().textContent.includes("开始投递") && !w.document.querySelector(".greet-dialog"));
-      return logs().slice(before);
+      let confirmText = "";
+      await waitUntil(() => {
+        const confirm = doc.querySelector(".zdl-confirm-dialog[open]");
+        if (confirm) {
+          confirmText = confirm.textContent;
+          if (noRulesChoice === null) return true;
+          [...confirm.querySelectorAll("button")].find((b) => b.textContent.trim() === noRulesChoice).click();
+          return false;
+        }
+        return logs().length > before && startButton().textContent.includes("开始投递") && !doc.querySelector(".greet-dialog");
+      });
+      const lines = logs().slice(before);
+      lines.confirmText = confirmText;
+      return lines;
+    },
+    // 等到没有确认框且没有在投递
+    async idle() {
+      await waitUntil(() => !doc.querySelector(".zdl-confirm-dialog[open]") && startButton().textContent.includes("开始投递"));
     },
     stats() {
       const raw = JSON.parse(w.localStorage.getItem("zdlDeliveryStatsV1") || "null");

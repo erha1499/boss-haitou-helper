@@ -58,7 +58,7 @@ export const HistoryMethods = {
       const searchInput = document.createElement("input");
       searchInput.className = "zdl-hist-search";
       searchInput.type = "text";
-      searchInput.placeholder = "搜索公司名";
+      searchInput.placeholder = "搜索公司或岗位";
       toolbar.appendChild(searchInput);
       panel.append(header, toolbar);
 
@@ -85,10 +85,20 @@ export const HistoryMethods = {
           ph.textContent = e.name.slice(0, 1);
           companyDiv.appendChild(ph);
         }
+        const nameWrap = document.createElement("div");
+        nameWrap.className = "zdl-hist-names";
         const nameSpan = document.createElement("span");
         nameSpan.className = "zdl-hist-name";
         nameSpan.textContent = e.name;
-        companyDiv.appendChild(nameSpan);
+        nameWrap.appendChild(nameSpan);
+        if (e.jobs.length) {
+          const jobsSpan = document.createElement("span");
+          jobsSpan.className = "zdl-hist-jobs";
+          jobsSpan.textContent = e.jobs.join("、");
+          jobsSpan.title = e.jobs.join("\n");
+          nameWrap.appendChild(jobsSpan);
+        }
+        companyDiv.appendChild(nameWrap);
         const isBlocked = state.blockedCompanies.includes(e.name);
         if (isBlocked) row.classList.add("blocked");
         const countSpan = document.createElement("span");
@@ -127,12 +137,12 @@ export const HistoryMethods = {
         listWrap.appendChild(summary);
         const keyword = searchInput.value.trim().toLowerCase();
         const filtered = keyword
-          ? entries.filter((e) => e.name.toLowerCase().includes(keyword))
+          ? entries.filter((e) => [e.name, ...e.jobs].some((text) => text.toLowerCase().includes(keyword)))
           : entries;
         if (filtered.length === 0) {
           const noResult = document.createElement("div");
           noResult.className = "zdl-hist-empty";
-          noResult.textContent = keyword ? `没有匹配 "${keyword}" 的公司` : "暂无记录";
+          noResult.textContent = keyword ? `没有匹配 "${keyword}" 的公司或岗位` : "暂无记录";
           listWrap.appendChild(noResult);
         } else {
           filtered.forEach((e) => listWrap.appendChild(buildRow(e)));
@@ -147,6 +157,7 @@ export const HistoryMethods = {
             name,
             count: typeof val === "object" ? val.count : val,
             logo: (typeof val === "object" ? val.logo : "") || logos[name] || "",
+            jobs: (typeof val === "object" && val.jobs) || [],
           }))
           .sort((a, b) => b.count - a.count);
         const total = entries.reduce((s, e) => s + e.count, 0);
@@ -161,13 +172,14 @@ export const HistoryMethods = {
           Object.entries(companies).forEach(([name, val]) => {
             const count = typeof val === "object" ? val.count : val;
             const dayLogo = typeof val === "object" ? val.logo : "";
-            if (!merged[name]) merged[name] = { count: 0, logo: dayLogo || logos[name] || "" };
+            if (!merged[name]) merged[name] = { count: 0, logo: dayLogo || logos[name] || "", jobs: [] };
             merged[name].count += count;
+            if (typeof val === "object" && val.jobs) merged[name].jobs = [...new Set([...merged[name].jobs, ...val.jobs])];
             if (!merged[name].logo && dayLogo) merged[name].logo = dayLogo;
           });
         });
         const entries = Object.entries(merged)
-          .map(([name, obj]) => ({ name, count: obj.count, logo: obj.logo || logos[name] || "" }))
+          .map(([name, obj]) => ({ name, count: obj.count, logo: obj.logo || logos[name] || "", jobs: obj.jobs }))
           .sort((a, b) => b.count - a.count);
         const total = entries.reduce((s, e) => s + e.count, 0);
         renderEntries(entries, `全部汇总：共 ${total} 次投递，涉及 ${entries.length} 家公司`);

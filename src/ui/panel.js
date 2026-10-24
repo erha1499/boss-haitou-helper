@@ -113,8 +113,32 @@ export const PanelMethods = {
       state.logEntries = [];
       saveLogEntries();
       elements.log.replaceChildren();
+      this._refreshLogTabs();
     });
-    logHeading.append(logTitle, clearLog);
+    // 日志筛选：全部 / 已投递 / 跳过，方便单独核对被跳过的岗位
+    const tabs = document.createElement("div");
+    tabs.className = "zdl-log-tabs";
+    tabs.setAttribute("role", "group");
+    tabs.setAttribute("aria-label", "筛选日志");
+    [["all", "全部"], ["ok", "已投递"], ["skip", "跳过"]].forEach(([filter, label]) => {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "zdl-log-tab";
+      tab.dataset.filter = filter;
+      tab.dataset.label = label;
+      tab.textContent = label;
+      tab.addEventListener("click", () => {
+        elements.log.dataset.filter = filter;
+        this._refreshLogTabs();
+        elements.log.scrollTop = elements.log.scrollHeight;
+      });
+      tabs.appendChild(tab);
+    });
+    elements.logTabs = tabs;
+    const logTools = document.createElement("div");
+    logTools.className = "zdl-log-tools";
+    logTools.append(tabs, clearLog);
+    logHeading.append(logTitle, logTools);
     logSection.append(logHeading, elements.log);
     const resizeHandle = document.createElement("div");
     resizeHandle.className = "zdl-resize-handle";
@@ -293,10 +317,35 @@ export const PanelMethods = {
     targetRow.appendChild(elements.settingsBtn);
     elements.controlBtn = this._createTextButton("开始投递", () => { toggleProcess(); });
     elements.controlBtn.classList.add("zdl-control-btn");
-    container.append(targetRow, elements.controlBtn);
+    // 投递中显示：本次已投/跳过多少、正在看哪个岗位
+    elements.runStatusEl = document.createElement("div");
+    elements.runStatusEl.className = "zdl-run-status";
+    elements.runStatusEl.hidden = true;
+    elements.runStatusEl.setAttribute("aria-live", "polite");
+    elements.runStatusEl.innerHTML = '<div class="zdl-run-head"><span class="zdl-run-dot"></span><span class="zdl-run-count"></span></div><div class="zdl-run-activity"></div>';
+    container.append(targetRow, elements.controlBtn, elements.runStatusEl);
     return container;
   },
 
+
+  // 更新日志筛选按钮上的数量，以及当前筛选下没有记录时的提示
+  _refreshLogTabs() {
+    const log = elements.log;
+    if (!log || !elements.logTabs) return;
+    const filter = log.dataset.filter || "all";
+    const counts = {
+      ok: log.querySelectorAll(".zdl-log-job.ok").length,
+      skip: log.querySelectorAll(".zdl-log-job.skip").length,
+    };
+    elements.logTabs.querySelectorAll(".zdl-log-tab").forEach((tab) => {
+      const n = counts[tab.dataset.filter];
+      tab.textContent = n ? `${tab.dataset.label} ${n}` : tab.dataset.label;
+      tab.classList.toggle("active", tab.dataset.filter === filter);
+      tab.setAttribute("aria-pressed", String(tab.dataset.filter === filter));
+    });
+    if (filter !== "all" && !counts[filter]) log.dataset.empty = filter === "ok" ? "还没有投递记录" : "还没有跳过的岗位";
+    else delete log.dataset.empty;
+  },
 
   _createLogger() {
     const log = document.createElement("div");

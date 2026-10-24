@@ -1,5 +1,6 @@
 import { isJobsPage } from "./config.js";
 import { Core, stopProcess } from "./core.js";
+import { RunStatus } from "./run-status.js";
 import { elements, state } from "./state.js";
 import { UI_ICONS } from "./ui/icons.js";
 import { UI } from "./ui/index.js";
@@ -188,6 +189,7 @@ export const Delivery = {
       elements.miniIcon.title = label;
       elements.miniIcon.setAttribute("aria-label", label);
     }
+    RunStatus.render();
     if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
     if (elements.configImportBtn) UI._updateConfigControls();
   },

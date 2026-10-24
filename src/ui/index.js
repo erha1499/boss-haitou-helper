@@ -2,6 +2,7 @@ import { CoarsePreview } from "../preview.js";
 import { elements, state } from "../state.js";
 import { AccountsMethods } from "./accounts.js";
 import { ConfigShareMethods } from "./config-share.js";
+import { ConfirmMethods } from "./confirm.js";
 import { HistoryMethods } from "./history.js";
 import { PanelMethods, minimizePanel } from "./panel.js";
 import { SettingsMethods } from "./settings.js";
@@ -20,6 +21,7 @@ export const UI = {
       if (document.getElementById("zdl-tutorial")?.contains(e.target)) return;
       if (elements.configDialog?.contains(e.target)) return;
       if (elements.wizardDialog?.contains(e.target)) return;
+      if (this._confirmDialog?.contains(e.target)) return;
       if (elements.settingsPanel?.contains(e.target)) return;
       if (elements.accountsPanel?.contains(e.target)) return;
       if (elements.panel && !elements.panel.contains(e.target)) {
@@ -34,7 +36,7 @@ export const UI = {
       minimizePanel();
     });
     window.addEventListener("keydown", (e) => {
-      if (elements.configDialog.open || elements.wizardDialog?.open) return;
+      if (elements.configDialog.open || elements.wizardDialog?.open || this._confirmDialog?.open) return;
       if (e.key === "Escape" && !document.getElementById("zdl-tutorial")
         && (!elements.settingsPanel.hidden || !elements.accountsPanel.hidden)) {
         e.preventDefault();
@@ -51,4 +53,4 @@ export const UI = {
   },
 };
 
-Object.assign(UI, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);
+Object.assign(UI, ConfirmMethods, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);

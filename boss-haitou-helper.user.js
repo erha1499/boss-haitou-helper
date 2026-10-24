@@ -1,6 +1,6 @@
 // ==UserScript==
-// @name         zdl-BOSS海投助手
-// @namespace    https://github.com/yangshengzhou03
+// @name         boss海投助手
+// @namespace    https://github.com/erha1499
 // @version      2.1.1
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
@@ -10,7 +10,7 @@
 // @supportURL   https://github.com/erha1499/boss-haitou-helper/issues
 // @homepageURL  https://github.com/erha1499/boss-haitou-helper
 // @license      AGPL-3.0-or-later
-// @icon         https://www.zhipin.com/favicon.ico
+// @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJnIiB4MT0iMCIgeTE9IjAiIHgyPSIxIiB5Mj0iMSI+PHN0b3Agb2Zmc2V0PSIwIiBzdG9wLWNvbG9yPSIjNWI4Y2ZmIi8+PHN0b3Agb2Zmc2V0PSIxIiBzdG9wLWNvbG9yPSIjMWY0ZmQ2Ii8+PC9saW5lYXJHcmFkaWVudD48L2RlZnM+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTUiIGZpbGw9InVybCgjZykiLz48cGF0aCBkPSJNMTMgMzEuNSA1MSAxNSA0Mi41IDQ1LjUgMzIuNSAzNy41WiIgZmlsbD0iI2ZmZiIvPjxwYXRoIGQ9Ik0zMi41IDM3LjUgNTEgMTUgMjggMzQuNSAyOSA0NFoiIGZpbGw9IiNjZmRjZmYiLz48cGF0aCBkPSJNMTEgNTIuNWM0LjMtMy42IDguNy0zLjYgMTMgMHM4LjcgMy42IDEzIDAgOC43LTMuNiAxMyAwIiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmYiIHN0cm9rZS13aWR0aD0iMy4yIiBzdHJva2UtbGluZWNhcD0icm91bmQiIG9wYWNpdHk9Ii44NSIvPjwvc3ZnPgo=
 // @updateURL    https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/boss-haitou-helper.user.js
 // @downloadURL  https://raw.githubusercontent.com/erha1499/boss-haitou-helper/main/boss-haitou-helper.user.js
 // @noframes
@@ -452,6 +452,8 @@
     wizardDialog: null,
     wizardBtn: null,
     emptyRulesHint: null,
+    runStatusEl: null,
+    logTabs: null,
   };
 
   function saveLogEntries() {
@@ -466,6 +468,75 @@
   }
 
   state.jobTypeFilter = normalizeJobTypeFilter(getStoredJSON("zdlJobTypeFilter", null));
+
+  // 投递中的状态：面板里“开始投递”下面的状态行，以及网页标签的标题。
+  // 切到别的标签页时也能从标题看到进度；投递结束后标题提示结果，回到这个页面几秒后恢复。
+
+  const TITLE_TAG = /^【[^】]*】/;
+  let clearTitleTimer = 0;
+  let clearTitleOnVisible = null;
+
+  function setTitleTag(tag) {
+    const base = document.title.replace(TITLE_TAG, "");
+    document.title = tag ? `【${tag}】${base}` : base;
+  }
+
+  const RunStatus = {
+    activity: "",
+
+    // 正在做什么，比如“正在加载岗位列表…”“正在看：某某科技 · Java开发”
+    setActivity(text) {
+      this.activity = text;
+      this.render();
+    },
+
+    render() {
+      const el = elements.runStatusEl;
+      const run = state.activeRun;
+      const running = !!run?.started && state.isRunning;
+      if (el) {
+        el.hidden = !running;
+        if (running) {
+          const skipped = Object.values(run.skips).reduce((sum, n) => sum + n, 0);
+          el.querySelector(".zdl-run-count").textContent = `本次已投 ${run.delivered} · 跳过 ${skipped}`;
+          el.querySelector(".zdl-run-activity").textContent = this.activity;
+          el.querySelector(".zdl-run-activity").title = this.activity;
+        }
+      }
+      if (running) {
+        this._stopTitleCleanup();
+        setTitleTag(`投递中 ${state.delivery.dailyCount}/${state.targetCount}`);
+      }
+    },
+
+    // 投递结束：result 为“投递完成”“已停止”“投递异常”
+    finish(result) {
+      this.activity = "";
+      this.render();
+      setTitleTag(result);
+      this._stopTitleCleanup();
+      const clearLater = () => {
+        clearTitleTimer = setTimeout(() => setTitleTag(""), 8000);
+      };
+      if (!document.hidden) {
+        clearLater();
+        return;
+      }
+      clearTitleOnVisible = () => {
+        if (document.hidden) return;
+        document.removeEventListener("visibilitychange", clearTitleOnVisible);
+        clearTitleOnVisible = null;
+        clearLater();
+      };
+      document.addEventListener("visibilitychange", clearTitleOnVisible);
+    },
+
+    _stopTitleCleanup() {
+      clearTimeout(clearTitleTimer);
+      if (clearTitleOnVisible) document.removeEventListener("visibilitychange", clearTitleOnVisible);
+      clearTitleOnVisible = null;
+    },
+  };
 
   const UI_ICONS = {
     help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.5 9a2.5 2.5 0 0 1 5 .5c0 1.5-2.5 1.8-2.5 3.5M12 16.5h.01"/></svg>',
@@ -798,7 +869,7 @@
       [elements.coarseRequiredTagList, elements.includeTagList, elements.coarseBlockedTagList,
         elements.locationTagList, elements.blockedCompanyTagList].forEach((el) => {
         el?.querySelectorAll(".zdl-tag-hit").forEach((badge) => badge.remove());
-        el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.removeAttribute("title"); });
+        el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.title = tag.dataset.tip || ""; });
       });
       lists.forEach(({ el, stats, what }) => {
         if (!el) return;
@@ -814,7 +885,7 @@
             tag.classList.add("conflict");
             tip += `；其中 ${stat.conflicts.length} 个也命中包含词，例如：${stat.conflicts.slice(0, 3).map((row) => row.info.title).join("、")}`;
           }
-          tag.title = tip;
+          tag.title = tag.dataset.tip ? `${tag.dataset.tip}\n${tip}` : tip;
         });
       });
     },
@@ -989,6 +1060,94 @@
     },
   };
 
+  // ---------- 求职向导 ----------
+  // 方向：include 写进“职位名包含任一”；exclusive 的方向没被选中时，signature 写进“职位名排除”。
+  // allows：选中该方向时，不排除这些方向（全栈本身就含前后端，AI 应用常写成“AI后端”）。
+  const WIZARD_DIRECTIONS = [
+    { key: "backend", label: "后端", exclusive: true, include: "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师", signature: "后端|服务端" },
+    { key: "fullstack", label: "全栈", exclusive: false, include: "全栈|full[- ]?stack", allows: ["backend", "frontend"] },
+    { key: "ai", label: "AI应用/Agent", exclusive: false, include: "ai*|agent|智能体|大模型|llm|aigc|rag", allows: ["backend", "fullstack"] },
+    { key: "frontend", label: "前端", exclusive: true, include: "前端|h5|vue|react|小程序", signature: "前端|h5" },
+    { key: "testing", label: "测试", exclusive: true, include: "测试|测开|qa|质量保障", signature: "测试|测开|qa" },
+    { key: "data", label: "数据/大数据", exclusive: true, include: "数据开发|大数据|数仓|etl|数据工程|spark|flink|bi", signature: "大数据|数仓|数据开发|etl" },
+    { key: "algorithm", label: "算法", exclusive: true,
+      include: "算法|机器学习|深度学习|强化学习|多模态|大模型训练|数据挖掘|计算机视觉|自然语言|语音识别|cv|nlp|ocr|slam|推荐|搜索",
+      signature: "算法|机器学习|深度学习|强化学习|cv|nlp|推理优化" },
+    { key: "client", label: "客户端/移动端", exclusive: true, include: "客户端|安卓|android|ios|移动端|鸿蒙|harmonyos|flutter|app开发", signature: "客户端|安卓|android|ios|移动端|鸿蒙|flutter" },
+    { key: "embedded", label: "嵌入式/硬件", exclusive: true, include: "嵌入式|硬件|单片机|驱动|fpga|stm32|plc", signature: "嵌入式|硬件|单片机|fpga|驱动开发" },
+    { key: "ops", label: "运维/DevOps", exclusive: true, include: "运维|devops|sre|k8s|云原生", signature: "运维|devops|sre" },
+    { key: "game", label: "游戏", exclusive: true, include: "游戏|unity|ue[45]|cocos", signature: "游戏|unity|ue[45]" },
+    { key: "security", label: "安全", exclusive: true, include: "安全|渗透|逆向", signature: "安全|渗透|逆向" },
+  ];
+  // 技术栈：title 写进“职位名包含任一”（“Java开发”这类职位名），jd 写进“详情包含任一”
+  const WIZARD_STACKS = [
+    { key: "java", label: "Java", title: "java", jd: "java|spring*|mybatis|微服务" },
+    { key: "python", label: "Python", title: "python", jd: "python|django|flask|fastapi" },
+    { key: "go", label: "Go", title: "golang|go开发|go语言", jd: "golang|go语言|go开发|gin" },
+    { key: "cpp", label: "C/C++", title: "c\\+\\+|cpp", jd: "c\\+\\+|cpp|qt" },
+    { key: "js", label: "JS/TS", title: "javascript|typescript|node*", jd: "javascript|typescript|vue|react|node*" },
+    { key: "php", label: "PHP", title: "php", jd: "php|laravel|thinkphp" },
+    { key: "dl", label: "深度学习框架", title: "pytorch|tensorflow", jd: "pytorch|tensorflow|paddle*|cuda|transformers|深度学习框架" },
+  ];
+  const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
+  const WIZARD_HR = "hr*|招聘|人事";
+  const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
+  const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
+  const defaultWizardAnswers = () => ({
+    identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
+    minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
+  });
+
+  // 由向导答案生成配置里向导负责的那几项；其他项（排除公司、工作地、详情排除、今日目标）保持不变
+  function generateWizardConfig(answers) {
+    const a = { ...defaultWizardAnswers(), ...answers };
+    const selected = new Set(a.directions);
+    const allowed = new Set();
+    WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).forEach((d) => (d.allows || []).forEach((k) => allowed.add(k)));
+    const includeTags = [
+      ...WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).map((d) => d.include),
+      ...WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.title),
+    ];
+    const coarseBlockedTags = WIZARD_DIRECTIONS
+      .filter((d) => d.exclusive && !selected.has(d.key) && !allowed.has(d.key))
+      .map((d) => d.signature);
+    if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
+    const types = [...a.identities];
+    if (a.includeOpen) types.push("open");
+    const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
+    const min = String(parseInt(a.minSalary, 10) || "");
+    return {
+      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
+      includeTags,
+      coarseRequiredTags: [],
+      coarseBlockedTags,
+      detailRequiredTags: [],
+      detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
+      salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
+      recruiterIncludeTags: a.onlyHr ? [WIZARD_HR] : [],
+      recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
+    };
+  }
+
+  // 向导生成的关键词是一长串写法（如“后[端台]|服务端|…”），界面上用名字代替。
+  // 只认和向导生成的原文完全一致的关键词，用户改过的照原样显示。
+  const WIZARD_KEYWORD_NAMES = new Map();
+  const nameKeyword = (keyword, name) => {
+    if (keyword && keyword.includes("|") && !WIZARD_KEYWORD_NAMES.has(keyword)) WIZARD_KEYWORD_NAMES.set(keyword, name);
+  };
+  WIZARD_DIRECTIONS.forEach((d) => {
+    nameKeyword(d.include, `${d.label}方向`);
+    nameKeyword(d.signature, `${d.label}方向`);
+  });
+  WIZARD_STACKS.forEach((s) => {
+    nameKeyword(s.title, `${s.label}职位`);
+    nameKeyword(s.jd, `${s.label}相关技术`);
+  });
+  nameKeyword(WIZARD_NON_TECH, "非技术岗（销售、客服、运营等）");
+  nameKeyword(WIZARD_HR, "HR / 招聘人员");
+
+  const wizardKeywordName = (keyword) => WIZARD_KEYWORD_NAMES.get(keyword) || "";
+
   function saveTags() {
     invalidateConfigUndo();
     UI._refreshFilterCounts();
@@ -1115,7 +1274,7 @@
       return types + years;
     }
     if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
-    return value.join("、");
+    return value.map((keyword) => wizardKeywordName(keyword) || keyword).join("、");
   }
 
   function getConfigChanges(config) {
@@ -1456,6 +1615,46 @@
     },
   };
 
+  // 通用确认框：和导入配置弹窗同样的样式。返回用户点的那个按钮的 value，关闭或按 Esc 返回 null。
+  const ConfirmMethods = {
+    _confirm({ title, message, actions }) {
+      if (this._confirmDialog?.open) return Promise.resolve(null);
+      const dialog = document.createElement("dialog");
+      dialog.className = "zdl-import-dialog zdl-confirm-dialog";
+      dialog.setAttribute("aria-labelledby", "zdl-confirm-title");
+      dialog.setAttribute("aria-describedby", "zdl-confirm-message");
+      const header = document.createElement("div");
+      header.className = "zdl-settings-header";
+      const heading = Object.assign(document.createElement("h4"), { id: "zdl-confirm-title", textContent: title });
+      header.appendChild(heading);
+      const body = Object.assign(document.createElement("p"), { id: "zdl-confirm-message", className: "zdl-confirm-message", textContent: message });
+      const footer = document.createElement("div");
+      footer.className = "zdl-import-footer";
+      dialog.append(header, body, footer);
+      this._confirmDialog = dialog;
+
+      return new Promise((resolve) => {
+        let result = null;
+        actions.forEach(({ label, value, primary }) => {
+          const button = this._createTextButton(label, () => {
+            result = value;
+            dialog.close();
+          });
+          button.className = `zdl-config-btn${primary ? " zdl-config-primary" : ""}`;
+          footer.appendChild(button);
+        });
+        dialog.addEventListener("close", () => {
+          dialog.remove();
+          this._confirmDialog = null;
+          resolve(result);
+        });
+        document.body.appendChild(dialog);
+        dialog.showModal();
+        footer.querySelector(".zdl-config-primary")?.focus();
+      });
+    },
+  };
+
   const collapseInstances = [];
 
 
@@ -1476,9 +1675,24 @@
     el.draggable = true;
     el.dataset.index = index;
 
+    // 多种写法按 | 分段显示、可换行；向导生成的显示名字，完整写法放在悬停提示和编辑框里
     const textSpan = document.createElement("span");
     textSpan.className = "zdl-tag-text";
-    textSpan.textContent = text;
+    const name = wizardKeywordName(text);
+    const parts = splitAlternatives(text);
+    if (name) {
+      const nameEl = Object.assign(document.createElement("span"), { className: "zdl-tag-name", textContent: name });
+      const meta = Object.assign(document.createElement("span"), { className: "zdl-tag-meta", textContent: `${parts.length} 种写法` });
+      textSpan.append(nameEl, meta);
+    } else if (parts.length > 1) {
+      parts.forEach((part) => textSpan.appendChild(Object.assign(document.createElement("span"), { className: "zdl-tag-part", textContent: part })));
+    } else {
+      textSpan.textContent = text;
+    }
+    if (parts.length > 1) {
+      el.dataset.tip = `${name ? `${name}：` : ""}${parts.join(" / ")}`;
+      el.title = el.dataset.tip;
+    }
 
     const removeBtn = document.createElement("button");
     removeBtn.className = "zdl-tag-remove";
@@ -2182,7 +2396,7 @@
         const searchInput = document.createElement("input");
         searchInput.className = "zdl-hist-search";
         searchInput.type = "text";
-        searchInput.placeholder = "搜索公司名";
+        searchInput.placeholder = "搜索公司或岗位";
         toolbar.appendChild(searchInput);
         panel.append(header, toolbar);
 
@@ -2209,10 +2423,20 @@
             ph.textContent = e.name.slice(0, 1);
             companyDiv.appendChild(ph);
           }
+          const nameWrap = document.createElement("div");
+          nameWrap.className = "zdl-hist-names";
           const nameSpan = document.createElement("span");
           nameSpan.className = "zdl-hist-name";
           nameSpan.textContent = e.name;
-          companyDiv.appendChild(nameSpan);
+          nameWrap.appendChild(nameSpan);
+          if (e.jobs.length) {
+            const jobsSpan = document.createElement("span");
+            jobsSpan.className = "zdl-hist-jobs";
+            jobsSpan.textContent = e.jobs.join("、");
+            jobsSpan.title = e.jobs.join("\n");
+            nameWrap.appendChild(jobsSpan);
+          }
+          companyDiv.appendChild(nameWrap);
           const isBlocked = state.blockedCompanies.includes(e.name);
           if (isBlocked) row.classList.add("blocked");
           const countSpan = document.createElement("span");
@@ -2251,12 +2475,12 @@
           listWrap.appendChild(summary);
           const keyword = searchInput.value.trim().toLowerCase();
           const filtered = keyword
-            ? entries.filter((e) => e.name.toLowerCase().includes(keyword))
+            ? entries.filter((e) => [e.name, ...e.jobs].some((text) => text.toLowerCase().includes(keyword)))
             : entries;
           if (filtered.length === 0) {
             const noResult = document.createElement("div");
             noResult.className = "zdl-hist-empty";
-            noResult.textContent = keyword ? `没有匹配 "${keyword}" 的公司` : "暂无记录";
+            noResult.textContent = keyword ? `没有匹配 "${keyword}" 的公司或岗位` : "暂无记录";
             listWrap.appendChild(noResult);
           } else {
             filtered.forEach((e) => listWrap.appendChild(buildRow(e)));
@@ -2271,6 +2495,7 @@
               name,
               count: typeof val === "object" ? val.count : val,
               logo: (typeof val === "object" ? val.logo : "") || logos[name] || "",
+              jobs: (typeof val === "object" && val.jobs) || [],
             }))
             .sort((a, b) => b.count - a.count);
           const total = entries.reduce((s, e) => s + e.count, 0);
@@ -2285,13 +2510,14 @@
             Object.entries(companies).forEach(([name, val]) => {
               const count = typeof val === "object" ? val.count : val;
               const dayLogo = typeof val === "object" ? val.logo : "";
-              if (!merged[name]) merged[name] = { count: 0, logo: dayLogo || logos[name] || "" };
+              if (!merged[name]) merged[name] = { count: 0, logo: dayLogo || logos[name] || "", jobs: [] };
               merged[name].count += count;
+              if (typeof val === "object" && val.jobs) merged[name].jobs = [...new Set([...merged[name].jobs, ...val.jobs])];
               if (!merged[name].logo && dayLogo) merged[name].logo = dayLogo;
             });
           });
           const entries = Object.entries(merged)
-            .map(([name, obj]) => ({ name, count: obj.count, logo: obj.logo || logos[name] || "" }))
+            .map(([name, obj]) => ({ name, count: obj.count, logo: obj.logo || logos[name] || "", jobs: obj.jobs }))
             .sort((a, b) => b.count - a.count);
           const total = entries.reduce((s, e) => s + e.count, 0);
           renderEntries(entries, `全部汇总：共 ${total} 次投递，涉及 ${entries.length} 家公司`);
@@ -2460,8 +2686,32 @@
         state.logEntries = [];
         saveLogEntries();
         elements.log.replaceChildren();
+        this._refreshLogTabs();
       });
-      logHeading.append(logTitle, clearLog);
+      // 日志筛选：全部 / 已投递 / 跳过，方便单独核对被跳过的岗位
+      const tabs = document.createElement("div");
+      tabs.className = "zdl-log-tabs";
+      tabs.setAttribute("role", "group");
+      tabs.setAttribute("aria-label", "筛选日志");
+      [["all", "全部"], ["ok", "已投递"], ["skip", "跳过"]].forEach(([filter, label]) => {
+        const tab = document.createElement("button");
+        tab.type = "button";
+        tab.className = "zdl-log-tab";
+        tab.dataset.filter = filter;
+        tab.dataset.label = label;
+        tab.textContent = label;
+        tab.addEventListener("click", () => {
+          elements.log.dataset.filter = filter;
+          this._refreshLogTabs();
+          elements.log.scrollTop = elements.log.scrollHeight;
+        });
+        tabs.appendChild(tab);
+      });
+      elements.logTabs = tabs;
+      const logTools = document.createElement("div");
+      logTools.className = "zdl-log-tools";
+      logTools.append(tabs, clearLog);
+      logHeading.append(logTitle, logTools);
       logSection.append(logHeading, elements.log);
       const resizeHandle = document.createElement("div");
       resizeHandle.className = "zdl-resize-handle";
@@ -2640,10 +2890,35 @@
       targetRow.appendChild(elements.settingsBtn);
       elements.controlBtn = this._createTextButton("开始投递", () => { toggleProcess(); });
       elements.controlBtn.classList.add("zdl-control-btn");
-      container.append(targetRow, elements.controlBtn);
+      // 投递中显示：本次已投/跳过多少、正在看哪个岗位
+      elements.runStatusEl = document.createElement("div");
+      elements.runStatusEl.className = "zdl-run-status";
+      elements.runStatusEl.hidden = true;
+      elements.runStatusEl.setAttribute("aria-live", "polite");
+      elements.runStatusEl.innerHTML = '<div class="zdl-run-head"><span class="zdl-run-dot"></span><span class="zdl-run-count"></span></div><div class="zdl-run-activity"></div>';
+      container.append(targetRow, elements.controlBtn, elements.runStatusEl);
       return container;
     },
 
+
+    // 更新日志筛选按钮上的数量，以及当前筛选下没有记录时的提示
+    _refreshLogTabs() {
+      const log = elements.log;
+      if (!log || !elements.logTabs) return;
+      const filter = log.dataset.filter || "all";
+      const counts = {
+        ok: log.querySelectorAll(".zdl-log-job.ok").length,
+        skip: log.querySelectorAll(".zdl-log-job.skip").length,
+      };
+      elements.logTabs.querySelectorAll(".zdl-log-tab").forEach((tab) => {
+        const n = counts[tab.dataset.filter];
+        tab.textContent = n ? `${tab.dataset.label} ${n}` : tab.dataset.label;
+        tab.classList.toggle("active", tab.dataset.filter === filter);
+        tab.setAttribute("aria-pressed", String(tab.dataset.filter === filter));
+      });
+      if (filter !== "all" && !counts[filter]) log.dataset.empty = filter === "ok" ? "还没有投递记录" : "还没有跳过的岗位";
+      else delete log.dataset.empty;
+    },
 
     _createLogger() {
       const log = document.createElement("div");
@@ -3046,74 +3321,6 @@
     },
   };
 
-  // ---------- 求职向导 ----------
-  // 方向：include 写进“职位名包含任一”；exclusive 的方向没被选中时，signature 写进“职位名排除”。
-  // allows：选中该方向时，不排除这些方向（全栈本身就含前后端，AI 应用常写成“AI后端”）。
-  const WIZARD_DIRECTIONS = [
-    { key: "backend", label: "后端", exclusive: true, include: "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师", signature: "后端|服务端" },
-    { key: "fullstack", label: "全栈", exclusive: false, include: "全栈|full[- ]?stack", allows: ["backend", "frontend"] },
-    { key: "ai", label: "AI应用/Agent", exclusive: false, include: "ai*|agent|智能体|大模型|llm|aigc|rag", allows: ["backend", "fullstack"] },
-    { key: "frontend", label: "前端", exclusive: true, include: "前端|h5|vue|react|小程序", signature: "前端|h5" },
-    { key: "testing", label: "测试", exclusive: true, include: "测试|测开|qa|质量保障", signature: "测试|测开|qa" },
-    { key: "data", label: "数据/大数据", exclusive: true, include: "数据开发|大数据|数仓|etl|数据工程|spark|flink|bi", signature: "大数据|数仓|数据开发|etl" },
-    { key: "algorithm", label: "算法", exclusive: true,
-      include: "算法|机器学习|深度学习|强化学习|多模态|大模型训练|数据挖掘|计算机视觉|自然语言|语音识别|cv|nlp|ocr|slam|推荐|搜索",
-      signature: "算法|机器学习|深度学习|强化学习|cv|nlp|推理优化" },
-    { key: "client", label: "客户端/移动端", exclusive: true, include: "客户端|安卓|android|ios|移动端|鸿蒙|harmonyos|flutter|app开发", signature: "客户端|安卓|android|ios|移动端|鸿蒙|flutter" },
-    { key: "embedded", label: "嵌入式/硬件", exclusive: true, include: "嵌入式|硬件|单片机|驱动|fpga|stm32|plc", signature: "嵌入式|硬件|单片机|fpga|驱动开发" },
-    { key: "ops", label: "运维/DevOps", exclusive: true, include: "运维|devops|sre|k8s|云原生", signature: "运维|devops|sre" },
-    { key: "game", label: "游戏", exclusive: true, include: "游戏|unity|ue[45]|cocos", signature: "游戏|unity|ue[45]" },
-    { key: "security", label: "安全", exclusive: true, include: "安全|渗透|逆向", signature: "安全|渗透|逆向" },
-  ];
-  // 技术栈：title 写进“职位名包含任一”（“Java开发”这类职位名），jd 写进“详情包含任一”
-  const WIZARD_STACKS = [
-    { key: "java", label: "Java", title: "java", jd: "java|spring*|mybatis|微服务" },
-    { key: "python", label: "Python", title: "python", jd: "python|django|flask|fastapi" },
-    { key: "go", label: "Go", title: "golang|go开发|go语言", jd: "golang|go语言|go开发|gin" },
-    { key: "cpp", label: "C/C++", title: "c\\+\\+|cpp", jd: "c\\+\\+|cpp|qt" },
-    { key: "js", label: "JS/TS", title: "javascript|typescript|node*", jd: "javascript|typescript|vue|react|node*" },
-    { key: "php", label: "PHP", title: "php", jd: "php|laravel|thinkphp" },
-    { key: "dl", label: "深度学习框架", title: "pytorch|tensorflow", jd: "pytorch|tensorflow|paddle*|cuda|transformers|深度学习框架" },
-  ];
-  const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
-  const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
-  const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
-  const defaultWizardAnswers = () => ({
-    identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
-    minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
-  });
-
-  // 由向导答案生成配置里向导负责的那几项；其他项（排除公司、工作地、详情排除、今日目标）保持不变
-  function generateWizardConfig(answers) {
-    const a = { ...defaultWizardAnswers(), ...answers };
-    const selected = new Set(a.directions);
-    const allowed = new Set();
-    WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).forEach((d) => (d.allows || []).forEach((k) => allowed.add(k)));
-    const includeTags = [
-      ...WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).map((d) => d.include),
-      ...WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.title),
-    ];
-    const coarseBlockedTags = WIZARD_DIRECTIONS
-      .filter((d) => d.exclusive && !selected.has(d.key) && !allowed.has(d.key))
-      .map((d) => d.signature);
-    if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
-    const types = [...a.identities];
-    if (a.includeOpen) types.push("open");
-    const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
-    const min = String(parseInt(a.minSalary, 10) || "");
-    return {
-      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
-      includeTags,
-      coarseRequiredTags: [],
-      coarseBlockedTags,
-      detailRequiredTags: [],
-      detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
-      salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
-      recruiterIncludeTags: a.onlyHr ? ["hr*|招聘|人事"] : [],
-      recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
-    };
-  }
-
   const WizardMethods = {
     // 求职向导：几个选择题生成规则，应用前预览改动，应用后可在底部撤销
     // 求职向导：弹窗里回答几个选择题生成基础规则，应用前预览改动，应用后可在底部撤销
@@ -3332,6 +3539,7 @@
         if (document.getElementById("zdl-tutorial")?.contains(e.target)) return;
         if (elements.configDialog?.contains(e.target)) return;
         if (elements.wizardDialog?.contains(e.target)) return;
+        if (this._confirmDialog?.contains(e.target)) return;
         if (elements.settingsPanel?.contains(e.target)) return;
         if (elements.accountsPanel?.contains(e.target)) return;
         if (elements.panel && !elements.panel.contains(e.target)) {
@@ -3346,7 +3554,7 @@
         minimizePanel();
       });
       window.addEventListener("keydown", (e) => {
-        if (elements.configDialog.open || elements.wizardDialog?.open) return;
+        if (elements.configDialog.open || elements.wizardDialog?.open || this._confirmDialog?.open) return;
         if (e.key === "Escape" && !document.getElementById("zdl-tutorial")
           && (!elements.settingsPanel.hidden || !elements.accountsPanel.hidden)) {
           e.preventDefault();
@@ -3363,7 +3571,7 @@
     },
   };
 
-  Object.assign(UI, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);
+  Object.assign(UI, ConfirmMethods, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);
 
   const DELIVERY_STATS_KEY = "zdlDeliveryStatsV1";
   const CURRENT_ACCOUNT_KEY = "zdlAccountPageV1:";
@@ -3549,6 +3757,7 @@
         elements.miniIcon.title = label;
         elements.miniIcon.setAttribute("aria-label", label);
       }
+      RunStatus.render();
       if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
       if (elements.configImportBtn) UI._updateConfigControls();
     },
@@ -3629,6 +3838,33 @@
 
   const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id;
 
+  // 开始投递时日志里的规则说明：第一行是摘要，其余行折叠起来，点开看每条规则的完整内容。
+  function filterSummary() {
+    const config = getCurrentConfig();
+    const count = (key) => config[key].length;
+    const group = (label, keys) => {
+      const parts = keys.filter(([key]) => count(key)).map(([key, name]) => `${name} ${count(key)}`);
+      return parts.length ? `${label}${parts.join("/")}` : "";
+    };
+    const salary = config.salaryFilter.type !== "none" || config.salaryFilter.negotiable === false;
+    const activity = count("recruiterActivityStatus") < RECRUITER_STATUS_OPTIONS.length;
+    const summary = [
+      jobTypeFilterActive() ? formatConfigValue("jobTypeFilter", config.jobTypeFilter) : "",
+      group("职位名 ", [["includeTags", "包含"], ["coarseRequiredTags", "必须"], ["coarseBlockedTags", "排除"]]),
+      count("locationTags") ? `工作地 ${config.locationTags.join("、")}` : "",
+      salary ? `薪资 ${formatConfigValue("salaryFilter", config.salaryFilter)}` : "",
+      count("blockedCompanies") ? `排除公司 ${count("blockedCompanies")} 家` : "",
+      group("详情 ", [["detailOptionalTags", "包含"], ["detailRequiredTags", "必须"], ["detailBlockedTags", "排除"]]),
+      count("recruiterIncludeTags") || activity ? "招聘者有限制" : "",
+    ].filter(Boolean);
+    if (!summary.length) return "筛选条件：未设置，列表里的岗位都会尝试沟通";
+    const details = Object.keys(CONFIG_FIELD_LABELS)
+      .filter((key) => key !== "targetCount" && (Array.isArray(config[key]) ? count(key) && !(key === "recruiterActivityStatus" && !activity) : true))
+      .filter((key) => (key === "jobTypeFilter" ? jobTypeFilterActive() : key === "salaryFilter" ? salary : true))
+      .map((key) => `${CONFIG_FIELD_LABELS[key]}：${formatConfigValue(key, config[key])}`);
+    return `筛选条件：${summary.join(" · ")}\n${details.join("\n")}`;
+  }
+
   // 列表里没有可投的岗位时，说清楚是投完了还是规则没匹配上。
   function listExhaustedMessage(total, fresh, contacted, rejected) {
     if (!total) return "当前列表没有岗位，本次结束";
@@ -3662,6 +3898,7 @@
           ? Math.min(remaining, 150)
           : Math.max(Math.min(remaining, 150 - roundIndex * 30), 30);
 
+        RunStatus.setActivity("正在加载岗位列表…");
         await this.autoScrollJobList(roundSize, run);
         if (!Delivery.isCurrent(run)) return;
 
@@ -3818,8 +4055,10 @@
         this.log(`${prefix}，${message}，已跳过`);
         run.skips[key] = (run.skips[key] || 0) + 1;
         state.currentIndex++;
+        RunStatus.render();
       };
       highlightCard(cardEl);
+      RunStatus.setActivity(`正在看：${item.company} · ${item.job}`);
       const detailReady = await this.openDetail(item, run);
       // 中途停止时不打标记，下次开始会重新处理这个岗位
       if (!Delivery.isCurrent(run)) return;
@@ -3942,11 +4181,12 @@
         return;
       }
 
-      const confirmed = await this.handleGreetingModal(item.company, item.logo, run);
+      const confirmed = await this.handleGreetingModal(item.company, item.logo, item.job, run);
       if (confirmed) {
         run.guard.ok("confirm");
         ContactedJobs.add(run.uid, item.jobId);
         run.delivered++;
+        RunStatus.render();
         this.log(`${prefix}，已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
       } else if (Delivery.isCurrent(run, true)) {
         this.log(`${prefix}，未确认投递成功，未增加次数`);
@@ -3968,6 +4208,7 @@
     // 同一步连续失败到上限时停止投递，返回是否已停止。
     stopIfBroken(run, step) {
       if (!run.guard.fail(step) || !Delivery.isCurrent(run)) return false;
+      run.failed = true;
       this.log(streakStopMessage(step));
       showNotification("投递已自动停止，详见日志", "error");
       stopProcess(run);
@@ -4042,7 +4283,7 @@
       return is150Limit;
     },
 
-    async handleGreetingModal(companyName, companyLogo, run) {
+    async handleGreetingModal(companyName, companyLogo, jobTitle, run) {
       // 阻塞等待"留在此页"按钮出现（无渐入动画，直接等 DOM 就绪，超时 5 秒）
       let btn = await this.waitFor(() =>
         [...document.querySelectorAll(BOSS.dialogCancel)]
@@ -4062,12 +4303,13 @@
         if (_companyName) {
           if (!state.deliveryHistory[today]) state.deliveryHistory[today] = {};
           const entry = state.deliveryHistory[today][_companyName];
-          if (entry && typeof entry === "object") {
-            entry.count = (entry.count || 0) + 1;
-            if (_companyLogo && !entry.logo) entry.logo = _companyLogo;
-          } else {
-            state.deliveryHistory[today][_companyName] = { count: (typeof entry === "number" ? entry : 0) + 1, logo: _companyLogo || "" };
-          }
+          const record = entry && typeof entry === "object" ? entry
+            : { count: typeof entry === "number" ? entry : 0, logo: "" };
+          record.count = (record.count || 0) + 1;
+          if (_companyLogo && !record.logo) record.logo = _companyLogo;
+          // 记下投了这家公司的哪些岗位（同名岗位只记一次）
+          if (jobTitle) record.jobs = [...new Set([...(record.jobs || []), jobTitle])].slice(-20);
+          state.deliveryHistory[today][_companyName] = record;
           try { localStorage.setItem("zdlDeliveryHistory", JSON.stringify(state.deliveryHistory)); } catch (e) {}
           if (_companyLogo && !state.companyLogos[_companyName]) {
             state.companyLogos[_companyName] = _companyLogo;
@@ -4151,10 +4393,23 @@
 
       const text = document.createElement("div");
       text.className = "zdl-log-text";
-      text.innerHTML = rich(message);
+      // 多行消息：第一行直接显示，其余折叠
+      const [first, ...rest] = message.split("\n");
+      text.innerHTML = rich(first);
+      if (rest.length) {
+        const more = document.createElement("details");
+        more.className = "zdl-log-more";
+        const label = document.createElement("summary");
+        label.textContent = "查看完整规则";
+        const body = document.createElement("div");
+        body.innerHTML = rest.map(rich).join("<br>");
+        more.append(label, body);
+        text.appendChild(more);
+      }
       item.append(timeEl, text);
       if (/本次共投递|本次结束|自动停止|投递已停止|已离开职位页/.test(message)) item.classList.add("zdl-log-key");
       if (/投递已停止|失败|异常/.test(message)) item.classList.add("zdl-log-error");
+      if (/^提示：/.test(message)) item.classList.add("zdl-log-tip");
       return item;
     },
 
@@ -4168,6 +4423,7 @@
         const atBottom = logPanel.scrollHeight - logPanel.scrollTop - logPanel.clientHeight < 40;
         logPanel.appendChild(this.renderLogItem(logEntry));
         if (atBottom) logPanel.scrollTop = logPanel.scrollHeight;
+        UI._refreshLogTabs();
       }
     },
 
@@ -4183,7 +4439,11 @@
 
   async function toggleProcess() {
     if (state.activeRun) {
-      if (state.isRunning) stopProcess(state.activeRun);
+      if (state.isRunning) {
+        state.activeRun.userStopped = true;
+        Core.log("已手动停止投递");
+        stopProcess(state.activeRun);
+      }
       return;
     }
     Delivery.sync();
@@ -4196,6 +4456,21 @@
       showNotification("请先切换到「职位」页再启动", "error");
       return;
     }
+    if (!hasFilterRules()) {
+      const choice = await UI._confirm({
+        title: "还没有设置筛选规则",
+        message: "现在开始会对列表里的所有岗位发起沟通，包括销售、客服等不相关的岗位。建议先用求职向导生成一套基础规则。",
+        actions: [
+          { label: "仍然开始", value: "start" },
+          { label: "打开求职向导", value: "wizard", primary: true },
+        ],
+      });
+      if (choice === "wizard") {
+        UI._showSettingsPanel();
+        UI._openWizard();
+      }
+      if (choice !== "start" || state.activeRun) return;
+    }
     if (!navigator.locks?.request) {
       showNotification("当前浏览器不支持投递任务锁，请使用新版 Chrome 或 Edge", "error");
       return;
@@ -4206,6 +4481,13 @@
     };
     state.activeRun = run;
     Delivery.render();
+    // 浏览器会给后台标签页的定时器限速，投递会明显变慢：切到后台时提醒一次
+    const onVisibilityChange = () => {
+      if (!document.hidden || run.warnedHidden || state.activeRun !== run || !state.isRunning) return;
+      run.warnedHidden = true;
+      Core.log("提示：页面在后台时浏览器会限速，投递会明显变慢，建议让这个标签页保持在前台");
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
     try {
       // 同一浏览器只运行一个投递任务，避免多标签重复投递及计数覆盖。
       await navigator.locks.request(DELIVERY_LOCK_NAME, { ifAvailable: true }, async (lock) => {
@@ -4229,27 +4511,21 @@
         Delivery.render();
         const startTime = new Date();
         Core.log(`开始自动海投，时间：${startTime.toLocaleTimeString()}`);
-        const filters = [];
-        if (jobTypeFilterActive()) filters.push(`岗位类型【${formatConfigValue("jobTypeFilter", state.jobTypeFilter)}】`);
-        if (state.coarseRequiredTags.length) filters.push(`必须职位【${state.coarseRequiredTags.join("、")}】`);
-        if (state.includeTags.length) filters.push(`可选职位【${state.includeTags.join("、")}】`);
-        filters.push(`工作地【${state.locationTags.join("、") || "不限"}】`);
-        if (state.blockedCompanies.length) filters.push(`不收集公司【${state.blockedCompanies.join("、")}】`);
-        if (state.coarseBlockedTags.length) filters.push(`禁收集职位【${state.coarseBlockedTags.join("、")}】`);
-        if (state.detailBlockedTags.length) filters.push(`禁止【${state.detailBlockedTags.join("、")}】`);
-        if (state.detailRequiredTags.length) filters.push(`必须【${state.detailRequiredTags.join("、")}】`);
-        if (state.detailOptionalTags.length) filters.push(`可选【${state.detailOptionalTags.join("、")}】`);
-        if (state.recruiterIncludeTags.length) filters.push(`只投招聘者【${state.recruiterIncludeTags.join("、")}】`);
-        Core.log(`筛选条件：${filters.join("，")}`);
+        Core.log(filterSummary());
 
         await Core.startProcessing(run);
       });
     } catch (error) {
+      run.failed = true;
       Core.log(`投递已停止：${state.account.error || error.message}`);
       showNotification(state.account.error || error.message, "error");
     } finally {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       highlightCard(null);
-      if (run.started) Core.logRunSummary(run);
+      if (run.started) {
+        Core.logRunSummary(run);
+        RunStatus.finish(run.userStopped ? "已停止" : run.failed ? "投递异常" : "投递完成");
+      }
       if (state.activeRun === run) {
         state.isRunning = false;
         state.activeRun = null;
@@ -4294,6 +4570,8 @@
 .zdl-import-dialog{position:fixed;inset:0;box-sizing:border-box;width:min(480px,calc(100vw - 24px));height:fit-content;max-width:none;max-height:calc(100vh - 24px);margin:auto;padding:18px;border:1px solid var(--zdl-border);border-radius:14px;background:#fff;color:var(--zdl-ink);font-family:var(--zdl-font);box-shadow:0 18px 70px rgba(23,36,58,.2);overflow:hidden}
 .zdl-import-dialog[open]{display:flex;flex-direction:column}
 .zdl-import-dialog::backdrop{background:rgba(23,36,58,.3)}
+.zdl-confirm-dialog{width:min(400px,calc(100vw - 24px))}
+.zdl-confirm-message{margin:0;font-size:13px;line-height:1.7;color:var(--zdl-text-2)}
 .zdl-import-body{min-height:0;overflow:auto}
 .zdl-import-body .zdl-config-scope{margin-top:0}
 .zdl-import-body .zdl-config-text{min-height:80px;max-height:32vh}
@@ -4363,7 +4641,7 @@
 .zdl-tag-list{display:contents}
 .zdl-tag-add-trigger{width:24px;height:24px;border-radius:6px;border:1px dashed #c3cede;background:#fff;color:var(--zdl-text-3);cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;transition:border-color .15s,color .15s,background .15s;line-height:1;font-weight:500;vertical-align:middle}
 .zdl-tag-add-trigger:hover{border-color:var(--zdl-primary);color:var(--zdl-primary);background:var(--zdl-accent)}
-.zdl-tag{display:inline-flex;align-items:center;gap:5px;max-width:100%;box-sizing:border-box;padding:4px 7px;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s;white-space:nowrap;background:#edf3fe;color:#41638f;border:1px solid #dfe8f7}
+.zdl-tag{display:inline-flex;align-items:center;gap:5px;max-width:100%;box-sizing:border-box;padding:4px 7px;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s;white-space:normal;background:#edf3fe;color:#41638f;border:1px solid #dfe8f7}
 .zdl-tag:hover{background:#e4ecfa}
 .zdl-tag.blocked{background:#fff1f0;color:#ad4a4a;border:1px solid #f5dada}
 .zdl-tag.blocked:hover{background:#fce5e3}
@@ -4377,7 +4655,16 @@
 .zdl-collapse-arrow{font-size:9px;width:10px;opacity:.65;flex-shrink:0}
 .zdl-collapse-body{padding:12px;border-top:1px solid var(--zdl-border);overflow:visible}
 .zdl-collapse-body.collapsed{display:none}
-.zdl-tag-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.zdl-tag-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.zdl-log-more{margin-top:2px}
+.zdl-log-more>summary{cursor:pointer;color:var(--zdl-primary);font-size:11px;list-style:none;width:fit-content}
+.zdl-log-more>summary::-webkit-details-marker{display:none}
+.zdl-log-more>summary::after{content:" ▾"}
+.zdl-log-more[open]>summary::after{content:" ▴"}
+.zdl-log-more>div{margin-top:4px;padding:6px 8px;border-radius:6px;background:var(--zdl-secondary);color:var(--zdl-text-2);line-height:1.7;overflow-wrap:anywhere}
+.zdl-tag-part+.zdl-tag-part::before{content:"/";margin:0 4px;opacity:.4}
+.zdl-tag-name{font-weight:600}
+.zdl-tag-meta{margin-left:6px;font-size:11px;opacity:.6;white-space:nowrap}
 .zdl-tag-remove{width:14px;height:14px;border-radius:4px;border:none;background:transparent;color:inherit;opacity:.65;cursor:pointer;font-size:10px;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0}
 .zdl-tag-remove:hover{background:rgba(23,36,58,.08);opacity:1}
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
@@ -4507,7 +4794,9 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-hist-company{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
 .zdl-hist-logo{width:30px;height:30px;border-radius:7px;object-fit:cover;flex-shrink:0;background:var(--zdl-secondary)}
 .zdl-hist-no-logo{width:30px;height:30px;border:1px solid var(--zdl-border);border-radius:7px;background:var(--zdl-accent);color:#5774a3;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex-shrink:0;box-sizing:border-box}
-.zdl-hist-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1f2937}
+.zdl-hist-names{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.4}
+.zdl-hist-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1f2937}
+.zdl-hist-jobs{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--zdl-text-4)}
 .zdl-hist-count{flex-shrink:0;font-weight:500;color:var(--zdl-primary);font-size:12px;font-variant-numeric:tabular-nums}
 .zdl-hist-action{flex-shrink:0;margin-left:8px}
 .zdl-hist-block-btn{padding:3px 8px;border:1px solid #f2d5d5;border-radius:5px;font-size:11px;line-height:1.5;cursor:pointer;background:#fff;color:#ad4a4a;transition:background .15s}
@@ -4558,6 +4847,13 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-icon-btn svg,#zdl-hist-close svg{width:100%;height:100%;display:block}
 .zdl-log-section{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--zdl-border);border-radius:10px;background:var(--zdl-secondary)}
 .zdl-log-heading{display:flex;align-items:center;justify-content:space-between;padding:7px 8px 7px 12px;border-bottom:1px solid var(--zdl-border);font-size:11px;font-weight:500;line-height:1.5;color:var(--zdl-text-3);flex-shrink:0}
+.zdl-log-tools{display:flex;align-items:center;gap:6px}
+.zdl-log-tabs{display:flex;gap:2px;padding:2px;border-radius:7px;background:#fff;border:1px solid var(--zdl-border)}
+.zdl-log-tab{padding:0 7px;border:0;border-radius:5px;background:transparent;color:var(--zdl-text-3);font:inherit;font-weight:400;line-height:1.7;cursor:pointer;white-space:nowrap}
+.zdl-log-tab:hover{color:var(--zdl-primary)}
+.zdl-log-tab.active{background:var(--zdl-accent);color:var(--zdl-primary);font-weight:500}
+.zdl-log[data-filter="ok"] .zdl-log-item:not(.zdl-log-job.ok),.zdl-log[data-filter="skip"] .zdl-log-item:not(.zdl-log-job.skip){display:none}
+.zdl-log[data-empty]::before{content:attr(data-empty);display:block;padding:16px 0;text-align:center;color:var(--zdl-text-4)}
 .zdl-log-clear{padding:1px 7px;border:0;border-radius:5px;background:transparent;color:var(--zdl-text-4);font:inherit;font-weight:400;cursor:pointer}
 .zdl-log-clear:hover{background:#fff;color:var(--zdl-primary)}
 .zdl-filter-group{margin-bottom:10px;border:1px solid var(--zdl-border);border-radius:9px;overflow:hidden;background:#fff}
@@ -4591,6 +4887,13 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-control-btn:hover:not(:disabled){background:linear-gradient(180deg,#336fe6 0%,#255fd3 100%)}
 .zdl-control-btn:active:not(:disabled){transform:translateY(1px)}
 .zdl-control-btn svg{width:15px;height:15px;flex-shrink:0}
+.zdl-run-status{margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--zdl-secondary);border:1px solid var(--zdl-border);font-size:12px;line-height:1.6;color:var(--zdl-text-2)}
+.zdl-run-status[hidden]{display:none}
+.zdl-run-head{display:flex;align-items:center;gap:6px;font-weight:600;color:#1f2937}
+.zdl-run-dot{width:7px;height:7px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 0 rgba(22,163,74,.5);animation:zdl-run-pulse 1.6s infinite}
+@keyframes zdl-run-pulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.45)}70%{box-shadow:0 0 0 6px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+@media (prefers-reduced-motion:reduce){.zdl-run-dot{animation:none}}
+.zdl-run-activity{color:var(--zdl-text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .zdl-control-btn.is-running{background:#fff;color:#c2410c;box-shadow:0 0 0 1px #f3d3c2 inset}
 .zdl-control-btn.is-running:hover:not(:disabled){background:#fff7f3}
 .zdl-log{padding:4px 12px 8px;line-height:1.6}
@@ -4610,6 +4913,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-log-item.zdl-log-key{margin:6px 0;padding:8px 10px;border:1px solid var(--zdl-border);border-radius:8px;background:#fff}
 .zdl-log-item.zdl-log-key .zdl-log-text{color:var(--zdl-ink);font-weight:500}
 .zdl-log-item.zdl-log-error .zdl-log-text{color:#b91c1c}
+.zdl-log-item.zdl-log-tip .zdl-log-text{color:#b45309}
 .zdl-log:empty::before{content:"还没有日志，开始投递后会在这里显示每个岗位的结果";display:block;padding:24px 8px;color:var(--zdl-text-4);font-size:12px;text-align:center}
 `;
 
@@ -4649,6 +4953,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
           logPanel.appendChild(Core.renderLogItem(entry));
         });
         logPanel.scrollTop = logPanel.scrollHeight;
+        UI._refreshLogTabs();
       }
       if (!hasHistory) {
         Core.log('欢迎使用海投助手，设置好筛选条件后点击"开始投递"');

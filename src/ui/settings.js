@@ -3,6 +3,8 @@ import { Delivery } from "../delivery.js";
 import { hasFilterRules, jobTypeFilterActive } from "../filters.js";
 import { CoarsePreview } from "../preview.js";
 import { JOB_TYPES, JOB_YEARS, normalizeJobTypeFilter } from "../rules/job-type.js";
+import { splitAlternatives } from "../rules/keywords.js";
+import { wizardKeywordName } from "../rules/wizard.js";
 import { invalidateConfigUndo, saveTags } from "../settings-store.js";
 import { elements, state } from "../state.js";
 import { UI_ICONS } from "./icons.js";
@@ -28,9 +30,24 @@ export function createTagElement(text, index, tags, container, tagType = "", edi
   el.draggable = true;
   el.dataset.index = index;
 
+  // 多种写法按 | 分段显示、可换行；向导生成的显示名字，完整写法放在悬停提示和编辑框里
   const textSpan = document.createElement("span");
   textSpan.className = "zdl-tag-text";
-  textSpan.textContent = text;
+  const name = wizardKeywordName(text);
+  const parts = splitAlternatives(text);
+  if (name) {
+    const nameEl = Object.assign(document.createElement("span"), { className: "zdl-tag-name", textContent: name });
+    const meta = Object.assign(document.createElement("span"), { className: "zdl-tag-meta", textContent: `${parts.length} 种写法` });
+    textSpan.append(nameEl, meta);
+  } else if (parts.length > 1) {
+    parts.forEach((part) => textSpan.appendChild(Object.assign(document.createElement("span"), { className: "zdl-tag-part", textContent: part })));
+  } else {
+    textSpan.textContent = text;
+  }
+  if (parts.length > 1) {
+    el.dataset.tip = `${name ? `${name}：` : ""}${parts.join(" / ")}`;
+    el.title = el.dataset.tip;
+  }
 
   const removeBtn = document.createElement("button");
   removeBtn.className = "zdl-tag-remove";

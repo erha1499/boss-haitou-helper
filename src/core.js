@@ -1,14 +1,16 @@
 import { cleanDesc, findInDetail, getDetailRoot, highlightCard } from "./boss/page.js";
 import { BOSS } from "./boss/selectors.js";
 import { checkJobCards, createStreakGuard, streakStopMessage } from "./boss/self-check.js";
-import { CONFIG, isJobsPage } from "./config.js";
+import { CONFIG, RECRUITER_STATUS_OPTIONS, isJobsPage } from "./config.js";
 import { ContactedJobs } from "./contacted.js";
 import { DELIVERY_LOCK_NAME, Delivery } from "./delivery.js";
-import { coarseExplain, coarseRejectReason, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
+import { coarseExplain, coarseRejectReason, hasFilterRules, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
 import { classifyJob } from "./rules/job-type.js";
 import { keywordSnippet, matchKeyword } from "./rules/keywords.js";
-import { formatConfigValue, getCurrentConfig } from "./settings-store.js";
+import { RunStatus } from "./run-status.js";
+import { CONFIG_FIELD_LABELS, formatConfigValue, getCurrentConfig } from "./settings-store.js";
 import { saveLogEntries, state } from "./state.js";
+import { UI } from "./ui/index.js";
 import { showNotification } from "./ui/notify.js";
 
 // 打开过详情的岗位卡片会记下“哪个账号、用哪套规则判断过”。同一套规则下再开始投递时跳过，
@@ -22,6 +24,33 @@ function rulesKey() {
 }
 
 const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id;
+
+// 开始投递时日志里的规则说明：第一行是摘要，其余行折叠起来，点开看每条规则的完整内容。
+function filterSummary() {
+  const config = getCurrentConfig();
+  const count = (key) => config[key].length;
+  const group = (label, keys) => {
+    const parts = keys.filter(([key]) => count(key)).map(([key, name]) => `${name} ${count(key)}`);
+    return parts.length ? `${label}${parts.join("/")}` : "";
+  };
+  const salary = config.salaryFilter.type !== "none" || config.salaryFilter.negotiable === false;
+  const activity = count("recruiterActivityStatus") < RECRUITER_STATUS_OPTIONS.length;
+  const summary = [
+    jobTypeFilterActive() ? formatConfigValue("jobTypeFilter", config.jobTypeFilter) : "",
+    group("职位名 ", [["includeTags", "包含"], ["coarseRequiredTags", "必须"], ["coarseBlockedTags", "排除"]]),
+    count("locationTags") ? `工作地 ${config.locationTags.join("、")}` : "",
+    salary ? `薪资 ${formatConfigValue("salaryFilter", config.salaryFilter)}` : "",
+    count("blockedCompanies") ? `排除公司 ${count("blockedCompanies")} 家` : "",
+    group("详情 ", [["detailOptionalTags", "包含"], ["detailRequiredTags", "必须"], ["detailBlockedTags", "排除"]]),
+    count("recruiterIncludeTags") || activity ? "招聘者有限制" : "",
+  ].filter(Boolean);
+  if (!summary.length) return "筛选条件：未设置，列表里的岗位都会尝试沟通";
+  const details = Object.keys(CONFIG_FIELD_LABELS)
+    .filter((key) => key !== "targetCount" && (Array.isArray(config[key]) ? count(key) && !(key === "recruiterActivityStatus" && !activity) : true))
+    .filter((key) => (key === "jobTypeFilter" ? jobTypeFilterActive() : key === "salaryFilter" ? salary : true))
+    .map((key) => `${CONFIG_FIELD_LABELS[key]}：${formatConfigValue(key, config[key])}`);
+  return `筛选条件：${summary.join(" · ")}\n${details.join("\n")}`;
+}
 
 // 列表里没有可投的岗位时，说清楚是投完了还是规则没匹配上。
 function listExhaustedMessage(total, fresh, contacted, rejected) {
@@ -56,6 +85,7 @@ export const Core = {
         ? Math.min(remaining, 150)
         : Math.max(Math.min(remaining, 150 - roundIndex * 30), 30);
 
+      RunStatus.setActivity("正在加载岗位列表…");
       await this.autoScrollJobList(roundSize, run);
       if (!Delivery.isCurrent(run)) return;
 
@@ -212,8 +242,10 @@ export const Core = {
       this.log(`${prefix}，${message}，已跳过`);
       run.skips[key] = (run.skips[key] || 0) + 1;
       state.currentIndex++;
+      RunStatus.render();
     };
     highlightCard(cardEl);
+    RunStatus.setActivity(`正在看：${item.company} · ${item.job}`);
     const detailReady = await this.openDetail(item, run);
     // 中途停止时不打标记，下次开始会重新处理这个岗位
     if (!Delivery.isCurrent(run)) return;
@@ -336,11 +368,12 @@ export const Core = {
       return;
     }
 
-    const confirmed = await this.handleGreetingModal(item.company, item.logo, run);
+    const confirmed = await this.handleGreetingModal(item.company, item.logo, item.job, run);
     if (confirmed) {
       run.guard.ok("confirm");
       ContactedJobs.add(run.uid, item.jobId);
       run.delivered++;
+      RunStatus.render();
       this.log(`${prefix}，已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
     } else if (Delivery.isCurrent(run, true)) {
       this.log(`${prefix}，未确认投递成功，未增加次数`);
@@ -362,6 +395,7 @@ export const Core = {
   // 同一步连续失败到上限时停止投递，返回是否已停止。
   stopIfBroken(run, step) {
     if (!run.guard.fail(step) || !Delivery.isCurrent(run)) return false;
+    run.failed = true;
     this.log(streakStopMessage(step));
     showNotification("投递已自动停止，详见日志", "error");
     stopProcess(run);
@@ -436,7 +470,7 @@ export const Core = {
     return is150Limit;
   },
 
-  async handleGreetingModal(companyName, companyLogo, run) {
+  async handleGreetingModal(companyName, companyLogo, jobTitle, run) {
     // 阻塞等待"留在此页"按钮出现（无渐入动画，直接等 DOM 就绪，超时 5 秒）
     let btn = await this.waitFor(() =>
       [...document.querySelectorAll(BOSS.dialogCancel)]
@@ -456,12 +490,13 @@ export const Core = {
       if (_companyName) {
         if (!state.deliveryHistory[today]) state.deliveryHistory[today] = {};
         const entry = state.deliveryHistory[today][_companyName];
-        if (entry && typeof entry === "object") {
-          entry.count = (entry.count || 0) + 1;
-          if (_companyLogo && !entry.logo) entry.logo = _companyLogo;
-        } else {
-          state.deliveryHistory[today][_companyName] = { count: (typeof entry === "number" ? entry : 0) + 1, logo: _companyLogo || "" };
-        }
+        const record = entry && typeof entry === "object" ? entry
+          : { count: typeof entry === "number" ? entry : 0, logo: "" };
+        record.count = (record.count || 0) + 1;
+        if (_companyLogo && !record.logo) record.logo = _companyLogo;
+        // 记下投了这家公司的哪些岗位（同名岗位只记一次）
+        if (jobTitle) record.jobs = [...new Set([...(record.jobs || []), jobTitle])].slice(-20);
+        state.deliveryHistory[today][_companyName] = record;
         try { localStorage.setItem("zdlDeliveryHistory", JSON.stringify(state.deliveryHistory)); } catch (e) {}
         if (_companyLogo && !state.companyLogos[_companyName]) {
           state.companyLogos[_companyName] = _companyLogo;
@@ -545,10 +580,23 @@ export const Core = {
 
     const text = document.createElement("div");
     text.className = "zdl-log-text";
-    text.innerHTML = rich(message);
+    // 多行消息：第一行直接显示，其余折叠
+    const [first, ...rest] = message.split("\n");
+    text.innerHTML = rich(first);
+    if (rest.length) {
+      const more = document.createElement("details");
+      more.className = "zdl-log-more";
+      const label = document.createElement("summary");
+      label.textContent = "查看完整规则";
+      const body = document.createElement("div");
+      body.innerHTML = rest.map(rich).join("<br>");
+      more.append(label, body);
+      text.appendChild(more);
+    }
     item.append(timeEl, text);
     if (/本次共投递|本次结束|自动停止|投递已停止|已离开职位页/.test(message)) item.classList.add("zdl-log-key");
     if (/投递已停止|失败|异常/.test(message)) item.classList.add("zdl-log-error");
+    if (/^提示：/.test(message)) item.classList.add("zdl-log-tip");
     return item;
   },
 
@@ -562,6 +610,7 @@ export const Core = {
       const atBottom = logPanel.scrollHeight - logPanel.scrollTop - logPanel.clientHeight < 40;
       logPanel.appendChild(this.renderLogItem(logEntry));
       if (atBottom) logPanel.scrollTop = logPanel.scrollHeight;
+      UI._refreshLogTabs();
     }
   },
 
@@ -577,7 +626,11 @@ export function stopProcess(run = state.activeRun) {
 
 export async function toggleProcess() {
   if (state.activeRun) {
-    if (state.isRunning) stopProcess(state.activeRun);
+    if (state.isRunning) {
+      state.activeRun.userStopped = true;
+      Core.log("已手动停止投递");
+      stopProcess(state.activeRun);
+    }
     return;
   }
   Delivery.sync();
@@ -590,6 +643,21 @@ export async function toggleProcess() {
     showNotification("请先切换到「职位」页再启动", "error");
     return;
   }
+  if (!hasFilterRules()) {
+    const choice = await UI._confirm({
+      title: "还没有设置筛选规则",
+      message: "现在开始会对列表里的所有岗位发起沟通，包括销售、客服等不相关的岗位。建议先用求职向导生成一套基础规则。",
+      actions: [
+        { label: "仍然开始", value: "start" },
+        { label: "打开求职向导", value: "wizard", primary: true },
+      ],
+    });
+    if (choice === "wizard") {
+      UI._showSettingsPanel();
+      UI._openWizard();
+    }
+    if (choice !== "start" || state.activeRun) return;
+  }
   if (!navigator.locks?.request) {
     showNotification("当前浏览器不支持投递任务锁，请使用新版 Chrome 或 Edge", "error");
     return;
@@ -600,6 +668,13 @@ export async function toggleProcess() {
   };
   state.activeRun = run;
   Delivery.render();
+  // 浏览器会给后台标签页的定时器限速，投递会明显变慢：切到后台时提醒一次
+  const onVisibilityChange = () => {
+    if (!document.hidden || run.warnedHidden || state.activeRun !== run || !state.isRunning) return;
+    run.warnedHidden = true;
+    Core.log("提示：页面在后台时浏览器会限速，投递会明显变慢，建议让这个标签页保持在前台");
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
   try {
     // 同一浏览器只运行一个投递任务，避免多标签重复投递及计数覆盖。
     await navigator.locks.request(DELIVERY_LOCK_NAME, { ifAvailable: true }, async (lock) => {
@@ -623,27 +698,21 @@ export async function toggleProcess() {
       Delivery.render();
       const startTime = new Date();
       Core.log(`开始自动海投，时间：${startTime.toLocaleTimeString()}`);
-      const filters = [];
-      if (jobTypeFilterActive()) filters.push(`岗位类型【${formatConfigValue("jobTypeFilter", state.jobTypeFilter)}】`);
-      if (state.coarseRequiredTags.length) filters.push(`必须职位【${state.coarseRequiredTags.join("、")}】`);
-      if (state.includeTags.length) filters.push(`可选职位【${state.includeTags.join("、")}】`);
-      filters.push(`工作地【${state.locationTags.join("、") || "不限"}】`);
-      if (state.blockedCompanies.length) filters.push(`不收集公司【${state.blockedCompanies.join("、")}】`);
-      if (state.coarseBlockedTags.length) filters.push(`禁收集职位【${state.coarseBlockedTags.join("、")}】`);
-      if (state.detailBlockedTags.length) filters.push(`禁止【${state.detailBlockedTags.join("、")}】`);
-      if (state.detailRequiredTags.length) filters.push(`必须【${state.detailRequiredTags.join("、")}】`);
-      if (state.detailOptionalTags.length) filters.push(`可选【${state.detailOptionalTags.join("、")}】`);
-      if (state.recruiterIncludeTags.length) filters.push(`只投招聘者【${state.recruiterIncludeTags.join("、")}】`);
-      Core.log(`筛选条件：${filters.join("，")}`);
+      Core.log(filterSummary());
 
       await Core.startProcessing(run);
     });
   } catch (error) {
+    run.failed = true;
     Core.log(`投递已停止：${state.account.error || error.message}`);
     showNotification(state.account.error || error.message, "error");
   } finally {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     highlightCard(null);
-    if (run.started) Core.logRunSummary(run);
+    if (run.started) {
+      Core.logRunSummary(run);
+      RunStatus.finish(run.userStopped ? "已停止" : run.failed ? "投递异常" : "投递完成");
+    }
     if (state.activeRun === run) {
       state.isRunning = false;
       state.activeRun = null;

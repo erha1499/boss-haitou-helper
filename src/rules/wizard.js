@@ -31,6 +31,7 @@ export const WIZARD_STACKS = [
   { key: "dl", label: "深度学习框架", title: "pytorch|tensorflow", jd: "pytorch|tensorflow|paddle*|cuda|transformers|深度学习框架" },
 ];
 export const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
+export const WIZARD_HR = "hr*|招聘|人事";
 export const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
 export const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
 export const defaultWizardAnswers = () => ({
@@ -64,7 +65,26 @@ export function generateWizardConfig(answers) {
     detailRequiredTags: [],
     detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
     salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
-    recruiterIncludeTags: a.onlyHr ? ["hr*|招聘|人事"] : [],
+    recruiterIncludeTags: a.onlyHr ? [WIZARD_HR] : [],
     recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
   };
 }
+
+// 向导生成的关键词是一长串写法（如“后[端台]|服务端|…”），界面上用名字代替。
+// 只认和向导生成的原文完全一致的关键词，用户改过的照原样显示。
+const WIZARD_KEYWORD_NAMES = new Map();
+const nameKeyword = (keyword, name) => {
+  if (keyword && keyword.includes("|") && !WIZARD_KEYWORD_NAMES.has(keyword)) WIZARD_KEYWORD_NAMES.set(keyword, name);
+};
+WIZARD_DIRECTIONS.forEach((d) => {
+  nameKeyword(d.include, `${d.label}方向`);
+  nameKeyword(d.signature, `${d.label}方向`);
+});
+WIZARD_STACKS.forEach((s) => {
+  nameKeyword(s.title, `${s.label}职位`);
+  nameKeyword(s.jd, `${s.label}相关技术`);
+});
+nameKeyword(WIZARD_NON_TECH, "非技术岗（销售、客服、运营等）");
+nameKeyword(WIZARD_HR, "HR / 招聘人员");
+
+export const wizardKeywordName = (keyword) => WIZARD_KEYWORD_NAMES.get(keyword) || "";

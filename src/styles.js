@@ -34,6 +34,8 @@ export const CSS = `
 .zdl-import-dialog{position:fixed;inset:0;box-sizing:border-box;width:min(480px,calc(100vw - 24px));height:fit-content;max-width:none;max-height:calc(100vh - 24px);margin:auto;padding:18px;border:1px solid var(--zdl-border);border-radius:14px;background:#fff;color:var(--zdl-ink);font-family:var(--zdl-font);box-shadow:0 18px 70px rgba(23,36,58,.2);overflow:hidden}
 .zdl-import-dialog[open]{display:flex;flex-direction:column}
 .zdl-import-dialog::backdrop{background:rgba(23,36,58,.3)}
+.zdl-confirm-dialog{width:min(400px,calc(100vw - 24px))}
+.zdl-confirm-message{margin:0;font-size:13px;line-height:1.7;color:var(--zdl-text-2)}
 .zdl-import-body{min-height:0;overflow:auto}
 .zdl-import-body .zdl-config-scope{margin-top:0}
 .zdl-import-body .zdl-config-text{min-height:80px;max-height:32vh}
@@ -103,7 +105,7 @@ export const CSS = `
 .zdl-tag-list{display:contents}
 .zdl-tag-add-trigger{width:24px;height:24px;border-radius:6px;border:1px dashed #c3cede;background:#fff;color:var(--zdl-text-3);cursor:pointer;font-size:14px;display:inline-flex;align-items:center;justify-content:center;padding:0;flex-shrink:0;transition:border-color .15s,color .15s,background .15s;line-height:1;font-weight:500;vertical-align:middle}
 .zdl-tag-add-trigger:hover{border-color:var(--zdl-primary);color:var(--zdl-primary);background:var(--zdl-accent)}
-.zdl-tag{display:inline-flex;align-items:center;gap:5px;max-width:100%;box-sizing:border-box;padding:4px 7px;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s;white-space:nowrap;background:#edf3fe;color:#41638f;border:1px solid #dfe8f7}
+.zdl-tag{display:inline-flex;align-items:center;gap:5px;max-width:100%;box-sizing:border-box;padding:4px 7px;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s;white-space:normal;background:#edf3fe;color:#41638f;border:1px solid #dfe8f7}
 .zdl-tag:hover{background:#e4ecfa}
 .zdl-tag.blocked{background:#fff1f0;color:#ad4a4a;border:1px solid #f5dada}
 .zdl-tag.blocked:hover{background:#fce5e3}
@@ -117,7 +119,16 @@ export const CSS = `
 .zdl-collapse-arrow{font-size:9px;width:10px;opacity:.65;flex-shrink:0}
 .zdl-collapse-body{padding:12px;border-top:1px solid var(--zdl-border);overflow:visible}
 .zdl-collapse-body.collapsed{display:none}
-.zdl-tag-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.zdl-tag-text{flex:1;min-width:0;overflow-wrap:anywhere}
+.zdl-log-more{margin-top:2px}
+.zdl-log-more>summary{cursor:pointer;color:var(--zdl-primary);font-size:11px;list-style:none;width:fit-content}
+.zdl-log-more>summary::-webkit-details-marker{display:none}
+.zdl-log-more>summary::after{content:" ▾"}
+.zdl-log-more[open]>summary::after{content:" ▴"}
+.zdl-log-more>div{margin-top:4px;padding:6px 8px;border-radius:6px;background:var(--zdl-secondary);color:var(--zdl-text-2);line-height:1.7;overflow-wrap:anywhere}
+.zdl-tag-part+.zdl-tag-part::before{content:"/";margin:0 4px;opacity:.4}
+.zdl-tag-name{font-weight:600}
+.zdl-tag-meta{margin-left:6px;font-size:11px;opacity:.6;white-space:nowrap}
 .zdl-tag-remove{width:14px;height:14px;border-radius:4px;border:none;background:transparent;color:inherit;opacity:.65;cursor:pointer;font-size:10px;display:flex;align-items:center;justify-content:center;padding:0;flex-shrink:0}
 .zdl-tag-remove:hover{background:rgba(23,36,58,.08);opacity:1}
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
@@ -247,7 +258,9 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-hist-company{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
 .zdl-hist-logo{width:30px;height:30px;border-radius:7px;object-fit:cover;flex-shrink:0;background:var(--zdl-secondary)}
 .zdl-hist-no-logo{width:30px;height:30px;border:1px solid var(--zdl-border);border-radius:7px;background:var(--zdl-accent);color:#5774a3;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex-shrink:0;box-sizing:border-box}
-.zdl-hist-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1f2937}
+.zdl-hist-names{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.4}
+.zdl-hist-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#1f2937}
+.zdl-hist-jobs{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--zdl-text-4)}
 .zdl-hist-count{flex-shrink:0;font-weight:500;color:var(--zdl-primary);font-size:12px;font-variant-numeric:tabular-nums}
 .zdl-hist-action{flex-shrink:0;margin-left:8px}
 .zdl-hist-block-btn{padding:3px 8px;border:1px solid #f2d5d5;border-radius:5px;font-size:11px;line-height:1.5;cursor:pointer;background:#fff;color:#ad4a4a;transition:background .15s}
@@ -298,6 +311,13 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-icon-btn svg,#zdl-hist-close svg{width:100%;height:100%;display:block}
 .zdl-log-section{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--zdl-border);border-radius:10px;background:var(--zdl-secondary)}
 .zdl-log-heading{display:flex;align-items:center;justify-content:space-between;padding:7px 8px 7px 12px;border-bottom:1px solid var(--zdl-border);font-size:11px;font-weight:500;line-height:1.5;color:var(--zdl-text-3);flex-shrink:0}
+.zdl-log-tools{display:flex;align-items:center;gap:6px}
+.zdl-log-tabs{display:flex;gap:2px;padding:2px;border-radius:7px;background:#fff;border:1px solid var(--zdl-border)}
+.zdl-log-tab{padding:0 7px;border:0;border-radius:5px;background:transparent;color:var(--zdl-text-3);font:inherit;font-weight:400;line-height:1.7;cursor:pointer;white-space:nowrap}
+.zdl-log-tab:hover{color:var(--zdl-primary)}
+.zdl-log-tab.active{background:var(--zdl-accent);color:var(--zdl-primary);font-weight:500}
+.zdl-log[data-filter="ok"] .zdl-log-item:not(.zdl-log-job.ok),.zdl-log[data-filter="skip"] .zdl-log-item:not(.zdl-log-job.skip){display:none}
+.zdl-log[data-empty]::before{content:attr(data-empty);display:block;padding:16px 0;text-align:center;color:var(--zdl-text-4)}
 .zdl-log-clear{padding:1px 7px;border:0;border-radius:5px;background:transparent;color:var(--zdl-text-4);font:inherit;font-weight:400;cursor:pointer}
 .zdl-log-clear:hover{background:#fff;color:var(--zdl-primary)}
 .zdl-filter-group{margin-bottom:10px;border:1px solid var(--zdl-border);border-radius:9px;overflow:hidden;background:#fff}
@@ -331,6 +351,13 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-control-btn:hover:not(:disabled){background:linear-gradient(180deg,#336fe6 0%,#255fd3 100%)}
 .zdl-control-btn:active:not(:disabled){transform:translateY(1px)}
 .zdl-control-btn svg{width:15px;height:15px;flex-shrink:0}
+.zdl-run-status{margin-top:10px;padding:8px 10px;border-radius:8px;background:var(--zdl-secondary);border:1px solid var(--zdl-border);font-size:12px;line-height:1.6;color:var(--zdl-text-2)}
+.zdl-run-status[hidden]{display:none}
+.zdl-run-head{display:flex;align-items:center;gap:6px;font-weight:600;color:#1f2937}
+.zdl-run-dot{width:7px;height:7px;border-radius:50%;background:#16a34a;box-shadow:0 0 0 0 rgba(22,163,74,.5);animation:zdl-run-pulse 1.6s infinite}
+@keyframes zdl-run-pulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.45)}70%{box-shadow:0 0 0 6px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+@media (prefers-reduced-motion:reduce){.zdl-run-dot{animation:none}}
+.zdl-run-activity{color:var(--zdl-text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .zdl-control-btn.is-running{background:#fff;color:#c2410c;box-shadow:0 0 0 1px #f3d3c2 inset}
 .zdl-control-btn.is-running:hover:not(:disabled){background:#fff7f3}
 .zdl-log{padding:4px 12px 8px;line-height:1.6}
@@ -350,6 +377,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-log-item.zdl-log-key{margin:6px 0;padding:8px 10px;border:1px solid var(--zdl-border);border-radius:8px;background:#fff}
 .zdl-log-item.zdl-log-key .zdl-log-text{color:var(--zdl-ink);font-weight:500}
 .zdl-log-item.zdl-log-error .zdl-log-text{color:#b91c1c}
+.zdl-log-item.zdl-log-tip .zdl-log-text{color:#b45309}
 .zdl-log:empty::before{content:"还没有日志，开始投递后会在这里显示每个岗位的结果";display:block;padding:24px 8px;color:var(--zdl-text-4);font-size:12px;text-align:center}
 `;
 

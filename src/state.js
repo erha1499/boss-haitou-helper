@@ -95,6 +95,8 @@ export const elements = {
   wizardDialog: null,
   wizardBtn: null,
   emptyRulesHint: null,
+  runStatusEl: null,
+  logTabs: null,
 };
 
 export function saveLogEntries() {

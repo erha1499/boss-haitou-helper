@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { RECRUITER_STATUS_OPTIONS } from "../src/config.js";
 import { matchKeyword } from "../src/rules/keywords.js";
-import { WIZARD_DIRECTIONS, WIZARD_NON_TECH, WIZARD_STACKS, generateWizardConfig } from "../src/rules/wizard.js";
+import { WIZARD_DIRECTIONS, WIZARD_NON_TECH, WIZARD_STACKS, generateWizardConfig, wizardKeywordName } from "../src/rules/wizard.js";
 
 const signature = (key) => WIZARD_DIRECTIONS.find((d) => d.key === key).signature;
 
@@ -61,3 +61,14 @@ test("向导里的关键词都是合法正则", () => {
     assert.doesNotThrow(() => new RegExp(source), kw);
   }
 });
+
+test("向导生成的多写法关键词都有名字，改过的没有", () => {
+  const config = generateWizardConfig({ directions: ["backend", "ai"], stacks: ["java", "go"], onlyHr: true });
+  const keywords = [...config.includeTags, ...config.coarseBlockedTags, ...config.detailOptionalTags, ...config.recruiterIncludeTags];
+  for (const keyword of keywords.filter((k) => k.includes("|"))) assert.ok(wizardKeywordName(keyword), keyword);
+  assert.equal(wizardKeywordName(WIZARD_DIRECTIONS[0].include), "后端方向");
+  assert.equal(wizardKeywordName(WIZARD_NON_TECH), "非技术岗（销售、客服、运营等）");
+  assert.equal(wizardKeywordName(`${WIZARD_DIRECTIONS[0].include}|新加的词`), "");
+  assert.equal(wizardKeywordName("java"), "");
+});
+

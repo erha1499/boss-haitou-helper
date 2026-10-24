@@ -1,5 +1,6 @@
 import { CONFIG, RECRUITER_STATUS_OPTIONS } from "./config.js";
 import { JOB_TYPES, JOB_TYPE_LABEL, JOB_YEARS, JOB_YEARS_LABEL, LEGACY_JOB_TYPES, normalizeJobTypeFilter } from "./rules/job-type.js";
+import { wizardKeywordName } from "./rules/wizard.js";
 import { elements, state } from "./state.js";
 import { UI } from "./ui/index.js";
 
@@ -129,7 +130,7 @@ export function formatConfigValue(key, value) {
     return types + years;
   }
   if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
-  return value.join("、");
+  return value.map((keyword) => wizardKeywordName(keyword) || keyword).join("、");
 }
 
 export function getConfigChanges(config) {

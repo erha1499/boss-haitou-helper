@@ -146,7 +146,7 @@ export const CoarsePreview = {
     [elements.coarseRequiredTagList, elements.includeTagList, elements.coarseBlockedTagList,
       elements.locationTagList, elements.blockedCompanyTagList].forEach((el) => {
       el?.querySelectorAll(".zdl-tag-hit").forEach((badge) => badge.remove());
-      el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.removeAttribute("title"); });
+      el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.title = tag.dataset.tip || ""; });
     });
     lists.forEach(({ el, stats, what }) => {
       if (!el) return;
@@ -162,7 +162,7 @@ export const CoarsePreview = {
           tag.classList.add("conflict");
           tip += `；其中 ${stat.conflicts.length} 个也命中包含词，例如：${stat.conflicts.slice(0, 3).map((row) => row.info.title).join("、")}`;
         }
-        tag.title = tip;
+        tag.title = tag.dataset.tip ? `${tag.dataset.tip}\n${tip}` : tip;
       });
     });
   },

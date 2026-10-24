@@ -36,6 +36,7 @@ async function init() {
         logPanel.appendChild(Core.renderLogItem(entry));
       });
       logPanel.scrollTop = logPanel.scrollHeight;
+      UI._refreshLogTabs();
     }
     if (!hasHistory) {
       Core.log('欢迎使用海投助手，设置好筛选条件后点击"开始投递"');
