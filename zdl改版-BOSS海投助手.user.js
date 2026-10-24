@@ -552,7 +552,12 @@
     settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h5m4 0h7M4 17h7m4 0h5"/><circle cx="11" cy="7" r="2"/><circle cx="13" cy="17" r="2"/></svg>',
   };
 
-  const SVG_ICON = `<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;fill:white;"><path d="M512 116.032a160 160 0 0 1 52.224 311.232v259.008c118.144-22.272 207.552-121.088 207.552-239.36 0-25.152 21.568-45.568 48.128-45.568 26.624 0 48.128 20.416 48.128 45.632 0 184.832-158.848 335.232-354.048 335.232S160 631.808 160 446.976c0-25.152 21.568-45.632 48.128-45.632 26.624 0 48.128 20.48 48.128 45.632 0 118.144 89.088 216.96 206.976 239.296V428.416A160.064 160.064 0 0 1 512 116.032z m0 96a64 64 0 1 0 0 128 64 64 0 0 0 0-128z m-36.672 668.48l-21.888-19.584a17.92 17.92 0 0 0-24.64 0l-21.952 19.584a56.32 56.32 0 0 1-77.504 0l-21.952-19.584a17.92 17.92 0 0 0-24.64 0l-28.288 25.6c-9.6 8.704-23.36 6.4-30.72-4.992a29.696 29.696 0 0 1 4.16-36.672l28.352-25.6a56.32 56.32 0 0 1 77.568 0l21.888 19.584a17.92 17.92 0 0 0 24.704 0l21.824-19.52a56.32 56.32 0 0 1 77.568 0l21.888 19.52a17.92 17.92 0 0 0 24.64 0l21.952-19.52a56.32 56.32 0 0 1 77.504 0l21.952 19.52a17.92 17.92 0 0 0 24.64 0l21.824-19.52a56.32 56.32 0 0 1 77.632 0l21.824 19.52c9.664 8.704 11.52 25.152 4.224 36.672-7.296 11.52-21.12 13.696-30.72 4.992l-21.888-19.584a17.92 17.92 0 0 0-24.64 0l-21.888 19.584a56.32 56.32 0 0 1-77.568 0l-21.888-19.584a17.92 17.92 0 0 0-24.64 0l-21.888 19.584a57.408 57.408 0 0 1-38.656 15.488 58.176 58.176 0 0 1-38.784-15.488z"/></svg>`;
+  // 脚本图标：纸飞机（投递）飞过波浪（海投），和脚本头 @icon 是同一套图形。
+  // 白色图形，放在蓝色渐变底的方块或圆点里；投递中纸飞机和波浪会动（见 styles.js 的 zdl-plane / zdl-wave）。
+  const SVG_ICON = `<svg class="zdl-logo" viewBox="7 9 50 50" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="width:100%;height:100%;display:block">
+<g class="zdl-plane"><path d="M13 31.5 51 15 42.5 45.5 32.5 37.5Z" fill="#fff"/><path d="M32.5 37.5 51 15 28 34.5 29 44Z" fill="#cfdcff"/></g>
+<path class="zdl-wave" d="M11 52.5c4.3-3.6 8.7-3.6 13 0s8.7 3.6 13 0 8.7-3.6 13 0" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" opacity=".85"/>
+</svg>`;
 
   // 英文按整词匹配：关键词边缘是字母时，紧挨着的字符不能也是字母（java 不匹配 javascript），
   // 中文不受影响。允许复数 s（agent 匹配 agents）；末尾加 * 表示前缀（spring* 匹配 springboot）。
@@ -3754,6 +3759,7 @@
       if (elements.miniIcon) {
         const label = state.isRunning ? "海投助手投递中，点击展开" : "展开海投助手";
         elements.miniIcon.classList.toggle("running", state.isRunning);
+        elements.panel?.classList.toggle("zdl-is-running", state.isRunning);
         elements.miniIcon.title = label;
         elements.miniIcon.setAttribute("aria-label", label);
       }
@@ -4602,7 +4608,7 @@
 .zdl-header{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;column-gap:10px;row-gap:14px;margin-bottom:16px;flex-shrink:0}
 .zdl-btn-group{display:flex;align-items:center;gap:4px;flex-shrink:0}
 .zdl-title-wrap{display:flex;align-items:center;gap:9px;min-width:0}
-.zdl-title-icon{width:32px;height:32px;flex:0 0 32px;padding:5px;box-sizing:border-box;background:var(--zdl-primary);border-radius:9px;display:flex;justify-content:center;align-items:center;color:#fff}
+.zdl-title-icon{width:32px;height:32px;flex:0 0 32px;padding:5px;box-sizing:border-box;background:linear-gradient(135deg,#5b8cff,#1f4fd6);border-radius:9px;display:flex;justify-content:center;align-items:center;color:#fff}
 .zdl-title-text h3{margin:0;color:var(--zdl-ink);font-weight:600;font-size:16px;line-height:1.4;white-space:nowrap}
 .zdl-filter-container{background:transparent;padding:0;margin:0}
 .zdl-filter-label{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:12px;line-height:1.6;flex-shrink:0}
@@ -4623,7 +4629,7 @@
 .zdl-scroll-wrap::-webkit-scrollbar-track{background:transparent;border-radius:4px}
 .zdl-scroll-wrap::-webkit-scrollbar-thumb{background:#c5d1e2;border-radius:4px}
 .zdl-resize-handle{position:absolute;right:4px;bottom:4px;width:12px;height:12px;cursor:nwse-resize;opacity:.55;background:linear-gradient(135deg,transparent 50%,#b4c1d4 50%,transparent 55%,#b4c1d4 55%,transparent 60%,#b4c1d4 60%);z-index:2}
-.zdl-mini-icon{width:40px;height:40px;position:fixed;bottom:40px;left:40px;background:var(--zdl-primary);border-radius:50%;box-shadow:0 6px 16px rgba(var(--zdl-primary-rgb),.4);cursor:pointer;display:none;justify-content:center;align-items:center;color:#fff;z-index:2147483647;transition:transform .15s ease,box-shadow .15s ease;overflow:visible;user-select:none;padding:8px;box-sizing:border-box}
+.zdl-mini-icon{width:40px;height:40px;position:fixed;bottom:40px;left:40px;background:linear-gradient(135deg,#5b8cff,#1f4fd6);border-radius:50%;box-shadow:0 6px 16px rgba(var(--zdl-primary-rgb),.4);cursor:pointer;display:none;justify-content:center;align-items:center;color:#fff;z-index:2147483647;transition:transform .15s ease,box-shadow .15s ease;overflow:visible;user-select:none;padding:8px;box-sizing:border-box}
 .zdl-status-tags{display:contents}
 .zdl-status-chip{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;font-family:inherit;border-radius:6px;font-size:12px;line-height:1.5;cursor:pointer;transition:background .15s,color .15s,border-color .15s;white-space:nowrap;background:#fff;color:var(--zdl-text-3);border:1px solid var(--zdl-border);user-select:none}
 .zdl-status-chip:hover{background:var(--zdl-secondary)}
@@ -4750,6 +4756,12 @@ li.job-card-box.zdl-preview-flash{outline:2px solid #f59e0b;outline-offset:-2px;
 .zdl-mini-icon.zdl-pop{animation:zdl-pop .28s cubic-bezier(.34,1.56,.64,1) .14s both}
 .zdl-mini-icon.running::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--zdl-primary);animation:zdl-ring 1.8s ease-out infinite;pointer-events:none}
 @keyframes zdl-pop{from{opacity:0;transform:scale(.3)}to{opacity:1;transform:scale(1)}}
+/* 投递中：纸飞机轻轻上下飞，波浪轻轻起伏 */
+.zdl-logo .zdl-plane,.zdl-logo .zdl-wave{transform-box:fill-box;transform-origin:center}
+.zdl-is-running .zdl-title-icon .zdl-plane,.zdl-mini-icon.running .zdl-plane{animation:zdl-plane-fly 1.8s ease-in-out infinite}
+.zdl-is-running .zdl-title-icon .zdl-wave,.zdl-mini-icon.running .zdl-wave{animation:zdl-wave-roll 1.8s ease-in-out infinite}
+@keyframes zdl-plane-fly{0%,100%{transform:translate(0,0) rotate(0)}50%{transform:translate(2px,-3px) rotate(-4deg)}}
+@keyframes zdl-wave-roll{0%,100%{transform:translateX(0)}50%{transform:translateX(-3px)}}
 @keyframes zdl-ring{0%{opacity:.55;transform:scale(1)}100%{opacity:0;transform:scale(1.45)}}
 @keyframes zdl-fade-in{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:none}}
 .zdl-settings-panel:not([hidden]),.zdl-history-panel{animation:zdl-fade-in .18s ease}
@@ -4805,7 +4817,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-panel,.zdl-settings-panel,.zdl-history-panel,.zdl-tutorial,.zdl-import-dialog,.zdl-entry,.zdl-notify{--zdl-border:#e4eaf3;--zdl-ink:#17243a;-webkit-font-smoothing:antialiased}
 .zdl-entry{position:fixed;top:80px;right:24px;z-index:2147483646;box-sizing:border-box;width:min(280px,calc(100vw - 32px));padding:14px;border:1px solid #c9d9fb;border-top:3px solid var(--zdl-primary);border-radius:14px;background:#fff;box-shadow:0 16px 44px rgba(23,36,58,.2),0 2px 8px rgba(23,36,58,.06);font-family:var(--zdl-font);animation:zdl-entry-in .35s ease,zdl-entry-nudge .6s ease .9s 2}
 .zdl-entry-head{display:flex;align-items:center;gap:10px}
-.zdl-entry-icon{position:relative;display:flex;width:38px;height:38px;flex:0 0 38px;box-sizing:border-box;padding:7px;border-radius:11px;background:var(--zdl-primary)}
+.zdl-entry-icon{position:relative;display:flex;width:38px;height:38px;flex:0 0 38px;box-sizing:border-box;padding:7px;border-radius:11px;background:linear-gradient(135deg,#5b8cff,#1f4fd6)}
 .zdl-entry-icon::after{content:"";position:absolute;inset:-4px;border-radius:14px;border:2px solid var(--zdl-primary);opacity:0;animation:zdl-entry-ring 1.6s ease-out .4s 3}
 .zdl-entry-text{display:flex;flex-direction:column;flex:1;min-width:0;line-height:1.45}
 .zdl-entry-text strong{font-size:14px;font-weight:600;color:var(--zdl-ink)}
@@ -4862,7 +4874,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-collapse-body>.zdl-tag-section:last-child{margin-bottom:0}
 .zdl-panel button:focus-visible,.zdl-settings-panel button:focus-visible,.zdl-history-panel button:focus-visible,.zdl-target-input:focus-visible,.zdl-config-text:focus-visible{outline:2px solid #a6c0f7;outline-offset:2px}
 @media(max-width:380px){.zdl-panel{padding:14px}.zdl-header{column-gap:8px}.zdl-title-wrap{gap:7px}.zdl-title-icon{width:30px;height:30px;flex-basis:30px}.zdl-title-text h3{font-size:14px}.zdl-btn-group{gap:2px}.zdl-header .zdl-icon-btn{width:26px;height:26px;flex-basis:26px}.zdl-delivery-target{gap:6px}.zdl-settings-open{padding:5px 8px}.zdl-settings-panel{padding:14px}}
-@media(prefers-reduced-motion:reduce){.zdl-panel *,.zdl-settings-panel *,.zdl-history-panel *{transition:none!important}.zdl-mini-icon,.zdl-mini-icon::after,.zdl-settings-panel,.zdl-history-panel,.zdl-notify{animation:none!important;transition:none!important}.zdl-entry,.zdl-entry-icon::after{animation:none}}
+@media(prefers-reduced-motion:reduce){.zdl-panel *,.zdl-settings-panel *,.zdl-history-panel *{transition:none!important}.zdl-mini-icon,.zdl-mini-icon::after,.zdl-logo .zdl-plane,.zdl-logo .zdl-wave,.zdl-settings-panel,.zdl-history-panel,.zdl-notify{animation:none!important;transition:none!important}.zdl-entry,.zdl-entry-icon::after{animation:none}}
 
 .zdl-title-text{display:flex;align-items:baseline;gap:6px;min-width:0}
 .zdl-version{padding:0 5px;border-radius:5px;background:var(--zdl-secondary);color:var(--zdl-text-4);font:500 10px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}

@@ -186,6 +186,7 @@ export const Delivery = {
     if (elements.miniIcon) {
       const label = state.isRunning ? "海投助手投递中，点击展开" : "展开海投助手";
       elements.miniIcon.classList.toggle("running", state.isRunning);
+      elements.panel?.classList.toggle("zdl-is-running", state.isRunning);
       elements.miniIcon.title = label;
       elements.miniIcon.setAttribute("aria-label", label);
     }
