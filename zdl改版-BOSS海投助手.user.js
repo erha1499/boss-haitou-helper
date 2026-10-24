@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.8.2
+// @version      1.9.0
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
 // @match        https://www.zhipin.com/*
@@ -534,6 +534,7 @@
       const steps = [
         { title: "固定面板", text: "固定后，点击页面也不会收起。", target: () => elements.pinBtn },
         { title: "打开筛选设置", text: "点这里设置岗位条件。", target: () => elements.settingsBtn },
+        { title: "用求职向导生成规则", text: "选身份、方向和技术栈，一键生成筛选规则，不用自己写关键词。", settings: true, target: () => elements.settingsPanel.querySelector(".zdl-wizard-head") },
         { title: "添加职位关键词", text: "职位名「必须包含」要全部命中，「包含任一」命中一个即可。", settings: true, section: 1, target: () => sectionButton(elements.coarseRequiredInput) },
         { title: "排除不想要的岗位", text: "职位详情命中排除词，就会跳过。", settings: true, section: 2, target: () => sectionButton(elements.detailBlockedInput) },
         { title: "筛选招聘者", text: "勾选你接受的活跃状态。", settings: true, section: 3, target: () => settingsPanel.querySelector("#recruiter-status-select .zdl-status-chip") },
@@ -933,7 +934,10 @@
       header.append(title, close);
       elements.settingsScroll = document.createElement("div");
       elements.settingsScroll.className = "zdl-scroll-wrap zdl-settings-scroll";
-      elements.settingsScroll.append(this._createFilterContainer());
+      const advanced = document.createElement("div");
+      advanced.className = "zdl-advanced-heading";
+      advanced.innerHTML = "<span>高级设置</span><small>按条件逐项调整，向导生成的规则也在这里</small>";
+      elements.settingsScroll.append(this._createWizard(), advanced, this._createFilterContainer());
       panel.append(header, CoarsePreview.create(), elements.settingsScroll, this._createConfigControls());
       return panel;
     },
@@ -1107,13 +1111,13 @@
         }
       });
       elements.configImportBtn = makeButton("导入配置", () => this._showConfigImport());
-      elements.configUndoBtn = makeButton("撤销导入", () => {
+      elements.configUndoBtn = makeButton("撤销上次替换", () => {
         try {
           undoConfigImport();
           fallback.hidden = true;
           try {
             this._refreshConfigFilters();
-            this._setConfigStatus("已恢复导入前的配置");
+            this._setConfigStatus("已恢复替换前的配置");
           } catch (error) { this._setConfigStatus("配置已恢复，请刷新页面更新显示。", true); }
         } catch (error) { this._setConfigStatus(error.message, true); }
         this._updateConfigControls();
@@ -1377,6 +1381,197 @@
       );
 
       return container;
+    },
+
+    // 求职向导：几个选择题生成规则，应用前预览改动，应用后可在底部撤销
+    _createWizard() {
+      const KEY = "zdlWizardAnswers";
+      let answers = { ...defaultWizardAnswers(), ...getStoredJSON(KEY, {}) };
+      const save = () => { try { localStorage.setItem(KEY, JSON.stringify(answers)); } catch (error) {} };
+      const hasRules = () => state.includeTags.length || state.coarseBlockedTags.length || state.coarseRequiredTags.length
+        || state.detailOptionalTags.length || state.detailRequiredTags.length || jobTypeFilterActive();
+
+      const root = document.createElement("section");
+      root.className = "zdl-wizard";
+      const head = document.createElement("button");
+      head.type = "button";
+      head.className = "zdl-wizard-head";
+      head.innerHTML = `<span class="zdl-wizard-mark">${UI_ICONS.settings}</span>
+        <span class="zdl-wizard-title"><strong>求职向导</strong><small>选几个选项，自动生成筛选规则</small></span>${UI_ICONS.chevron}`;
+      const body = document.createElement("div");
+      body.className = "zdl-wizard-body";
+      const setOpen = (open) => {
+        root.classList.toggle("open", open);
+        head.setAttribute("aria-expanded", String(open));
+        body.hidden = !open;
+      };
+      head.addEventListener("click", () => setOpen(body.hidden));
+
+      const chips = (options, isOn, toggle) => {
+        const row = document.createElement("div");
+        row.className = "zdl-wizard-chips";
+        options.forEach(([key, label]) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "zdl-status-chip";
+          const check = document.createElement("span");
+          check.className = "zdl-status-check";
+          check.setAttribute("aria-hidden", "true");
+          chip.append(check, label);
+          const render = () => {
+            chip.classList.toggle("active", isOn(key));
+            chip.setAttribute("aria-pressed", String(isOn(key)));
+          };
+          chip.addEventListener("click", () => { toggle(key); render(); onChange(); });
+          render();
+          row.appendChild(chip);
+        });
+        return row;
+      };
+      const listToggle = (field) => (key) => {
+        const list = answers[field];
+        answers[field] = list.includes(key) ? list.filter((k) => k !== key) : [...list, key];
+      };
+      const step = (index, title, desc, ...content) => {
+        const wrap = document.createElement("div");
+        wrap.className = "zdl-wizard-step";
+        const label = document.createElement("div");
+        label.className = "zdl-wizard-step-label";
+        label.innerHTML = `<span class="zdl-wizard-index">${index}</span><span>${title}</span>${desc ? `<small>${desc}</small>` : ""}`;
+        wrap.append(label, ...content);
+        return wrap;
+      };
+      const checkbox = (label, field) => {
+        const wrap = document.createElement("label");
+        wrap.className = "zdl-wizard-check";
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !!answers[field];
+        input.addEventListener("change", () => { answers[field] = input.checked; onChange(); });
+        wrap.append(input, label);
+        return wrap;
+      };
+
+      // ① 身份
+      const identityRow = chips([["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"]],
+        (k) => answers.identities.includes(k), listToggle("identities"));
+      const years = document.createElement("label");
+      years.className = "zdl-wizard-inline";
+      const yearsSelect = document.createElement("select");
+      yearsSelect.className = "zdl-wizard-select";
+      [["1", "1 年以内"], ["3", "3 年以内"], ["5", "5 年以内"], ["all", "不限年限"]].forEach(([value, text]) => yearsSelect.add(new Option(text, value)));
+      yearsSelect.value = answers.maxYears;
+      yearsSelect.addEventListener("change", () => { answers.maxYears = yearsSelect.value; onChange(); });
+      years.append("社招接受经验要求", yearsSelect);
+      const step1 = step("1", "你在找什么", "可多选", identityRow, years, checkbox("也投没写明类型的岗位", "includeOpen"));
+      // ② 方向
+      const step2 = step("2", "想做什么方向", "可多选，没选的方向会被排除",
+        chips(WIZARD_DIRECTIONS.map((d) => [d.key, d.label]), (k) => answers.directions.includes(k), listToggle("directions")));
+      // ③ 技术栈
+      const step3 = step("3", "用什么技术栈", "可多选，可跳过；职位描述要提到其中之一",
+        chips(WIZARD_STACKS.map((t) => [t.key, t.label]), (k) => answers.stacks.includes(k), listToggle("stacks")));
+      // 其他
+      const salary = document.createElement("label");
+      salary.className = "zdl-wizard-inline";
+      const salaryInput = document.createElement("input");
+      salaryInput.type = "number";
+      salaryInput.min = "0";
+      salaryInput.placeholder = "不限";
+      salaryInput.className = "zdl-wizard-number";
+      salaryInput.value = answers.minSalary;
+      salaryInput.addEventListener("change", () => { answers.minSalary = salaryInput.value; onChange(); });
+      salary.append("最低月薪", salaryInput, "K（日薪按 24 天折算）");
+      const extras = document.createElement("div");
+      extras.className = "zdl-wizard-extras";
+      extras.append(checkbox("可面议", "negotiable"), checkbox("只投 HR / 招聘人员", "onlyHr"),
+        checkbox("只投 3 天内活跃的招聘者", "recentActive"), checkbox("排除销售、客服、运营等非技术岗", "excludeNonTech"));
+      const step4 = step("4", "其他", "可选", salary, extras);
+
+      // 生成与预览
+      const actions = document.createElement("div");
+      actions.className = "zdl-wizard-actions";
+      const hint = document.createElement("span");
+      hint.className = "zdl-wizard-hint";
+      const generate = document.createElement("button");
+      generate.type = "button";
+      generate.className = "zdl-config-btn zdl-config-primary";
+      generate.textContent = "预览改动";
+      actions.append(hint, generate);
+      const review = document.createElement("div");
+      review.className = "zdl-wizard-review";
+      review.hidden = true;
+
+      let pendingJson = "";
+      const onChange = () => {
+        save();
+        years.hidden = !answers.identities.includes("social");
+        const ready = answers.identities.length && answers.directions.length;
+        generate.disabled = !ready;
+        hint.textContent = ready ? "会覆盖岗位类型、职位名、技术栈、薪资和招聘者规则" : "至少选一个身份和一个方向";
+        review.hidden = true;
+        pendingJson = "";
+      };
+
+      generate.addEventListener("click", () => {
+        let config;
+        try {
+          const json = JSON.stringify({ type: "zdl-boss-config", version: 1, config: { ...getCurrentConfig(), ...generateWizardConfig(answers) } });
+          config = parseConfig(json);
+          pendingJson = json;
+        } catch (error) {
+          review.hidden = false;
+          review.textContent = `生成失败：${error.message}`;
+          return;
+        }
+        const changes = getConfigChanges(config);
+        review.hidden = false;
+        review.replaceChildren();
+        const title = document.createElement("p");
+        title.className = "zdl-wizard-review-title";
+        title.textContent = changes.length ? `将更新 ${changes.length} 项设置，排除公司、工作地、详情排除词和今日目标保持不变` : "和当前规则一致，无需应用";
+        const diff = document.createElement("dl");
+        diff.className = "zdl-config-diff";
+        changes.forEach((change) => {
+          const row = document.createElement("div");
+          const dt = document.createElement("dt");
+          dt.textContent = change.label;
+          const dd = document.createElement("dd");
+          const before = Object.assign(document.createElement("span"), { className: "zdl-config-before", textContent: change.before });
+          const arrow = Object.assign(document.createElement("span"), { className: "zdl-config-arrow", textContent: "→" });
+          const after = Object.assign(document.createElement("strong"), { textContent: change.after });
+          dd.append(before, arrow, after);
+          row.append(dt, dd);
+          diff.appendChild(row);
+        });
+        const buttons = document.createElement("div");
+        buttons.className = "zdl-wizard-actions";
+        const cancel = this._createTextButton("取消", () => { review.hidden = true; });
+        cancel.className = "zdl-config-btn";
+        const apply = this._createTextButton("应用到规则", () => {
+          try {
+            const count = importConfig(pendingJson);
+            this._refreshConfigFilters();
+            this._updateConfigControls();
+            this._setConfigStatus(count ? "已按向导生成规则，可撤销" : "规则无变化");
+            setOpen(false);
+            CoarsePreview.render();
+          } catch (error) {
+            title.textContent = error.message;
+            title.classList.add("error");
+          }
+        });
+        apply.className = "zdl-config-btn zdl-config-primary";
+        apply.disabled = !changes.length || state.isRunning || !!state.activeRun;
+        buttons.append(cancel, apply);
+        review.append(title, diff, buttons);
+        review.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      });
+
+      body.append(step1, step2, step3, step4, actions, review);
+      root.append(head, body);
+      onChange();
+      setOpen(!hasRules());
+      return root;
     },
 
     _createJobTypeSection() {
@@ -2391,10 +2586,12 @@
   const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter"];
   const CONFIG_FIELD_LABELS = {
     targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型",
-    includeTags: "职位可选词", locationTags: "工作地", detailBlockedTags: "详情禁止词",
-    detailRequiredTags: "详情必须词", detailOptionalTags: "详情可选词", recruiterIncludeTags: "只投招聘者",
-    blockedCompanies: "不收集的公司", coarseBlockedTags: "职位禁止词", coarseRequiredTags: "职位必须词",
+    includeTags: "职位名 · 包含任一", coarseRequiredTags: "职位名 · 必须包含", coarseBlockedTags: "职位名 · 排除",
+    locationTags: "工作地", blockedCompanies: "排除公司",
+    detailBlockedTags: "详情 · 排除", detailRequiredTags: "详情 · 必须包含", detailOptionalTags: "详情 · 包含任一",
+    recruiterIncludeTags: "只投招聘者",
   };
+
   let configExternalChanged = false;
   let configUndoInvalidated = false;
 
@@ -2910,6 +3107,71 @@
     if (!jobTypeFilterActive()) return null;
     const result = classifyJob({ title: info.title, tags: info.tags, salary: info.salary });
     return result.kind === "years" && !jobTypeAccepted(result) ? result : null;
+  }
+
+  // ---------- 求职向导 ----------
+  // 方向：include 写进“职位名包含任一”；exclusive 的方向没被选中时，signature 写进“职位名排除”。
+  // allows：选中该方向时，不排除这些方向（全栈本身就含前后端，AI 应用常写成“AI后端”）。
+  const WIZARD_DIRECTIONS = [
+    { key: "backend", label: "后端", exclusive: true, include: "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师", signature: "后端|服务端" },
+    { key: "fullstack", label: "全栈", exclusive: false, include: "全栈|full[- ]?stack", allows: ["backend", "frontend"] },
+    { key: "ai", label: "AI应用/Agent", exclusive: false, include: "ai*|agent|智能体|大模型|llm|aigc|rag", allows: ["backend", "fullstack"] },
+    { key: "frontend", label: "前端", exclusive: true, include: "前端|h5|vue|react|小程序", signature: "前端|h5" },
+    { key: "testing", label: "测试", exclusive: true, include: "测试|测开|qa|质量保障", signature: "测试|测开|qa" },
+    { key: "data", label: "数据/大数据", exclusive: true, include: "数据开发|大数据|数仓|etl|数据工程|spark|flink|bi", signature: "大数据|数仓|数据开发|etl" },
+    { key: "algorithm", label: "算法", exclusive: true, include: "算法|机器学习|深度学习|cv|nlp|推荐|搜索", signature: "算法|机器学习|深度学习|cv|nlp|推理优化" },
+    { key: "client", label: "客户端/移动端", exclusive: true, include: "客户端|安卓|android|ios|移动端|鸿蒙|harmonyos|flutter|app开发", signature: "客户端|安卓|android|ios|移动端|鸿蒙|flutter" },
+    { key: "embedded", label: "嵌入式/硬件", exclusive: true, include: "嵌入式|硬件|单片机|驱动|fpga|stm32|plc", signature: "嵌入式|硬件|单片机|fpga|驱动开发" },
+    { key: "ops", label: "运维/DevOps", exclusive: true, include: "运维|devops|sre|k8s|云原生", signature: "运维|devops|sre" },
+    { key: "game", label: "游戏", exclusive: true, include: "游戏|unity|ue[45]|cocos", signature: "游戏|unity|ue[45]" },
+    { key: "security", label: "安全", exclusive: true, include: "安全|渗透|逆向", signature: "安全|渗透|逆向" },
+  ];
+  // 技术栈：title 写进“职位名包含任一”（“Java开发”这类职位名），jd 写进“详情包含任一”
+  const WIZARD_STACKS = [
+    { key: "java", label: "Java", title: "java", jd: "java|spring*|mybatis|微服务" },
+    { key: "python", label: "Python", title: "python", jd: "python|django|flask|fastapi" },
+    { key: "go", label: "Go", title: "golang|go开发|go语言", jd: "golang|go语言|go开发|gin" },
+    { key: "cpp", label: "C/C++", title: "c\\+\\+|cpp", jd: "c\\+\\+|cpp|qt" },
+    { key: "js", label: "JS/TS", title: "javascript|typescript|node*", jd: "javascript|typescript|vue|react|node*" },
+    { key: "php", label: "PHP", title: "php", jd: "php|laravel|thinkphp" },
+  ];
+  const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
+  const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
+  const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
+  const defaultWizardAnswers = () => ({
+    identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
+    minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
+  });
+
+  // 由向导答案生成配置里向导负责的那几项；其他项（排除公司、工作地、详情排除、今日目标）保持不变
+  function generateWizardConfig(answers) {
+    const a = { ...defaultWizardAnswers(), ...answers };
+    const selected = new Set(a.directions);
+    const allowed = new Set();
+    WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).forEach((d) => (d.allows || []).forEach((k) => allowed.add(k)));
+    const includeTags = [
+      ...WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).map((d) => d.include),
+      ...WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.title),
+    ];
+    const coarseBlockedTags = WIZARD_DIRECTIONS
+      .filter((d) => d.exclusive && !selected.has(d.key) && !allowed.has(d.key))
+      .map((d) => d.signature);
+    if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
+    const types = [...a.identities];
+    if (a.includeOpen) types.push("open");
+    const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
+    const min = String(parseInt(a.minSalary, 10) || "");
+    return {
+      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
+      includeTags,
+      coarseRequiredTags: [],
+      coarseBlockedTags,
+      detailRequiredTags: [],
+      detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
+      salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
+      recruiterIncludeTags: a.onlyHr ? ["hr*|招聘|人事"] : [],
+      recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
+    };
   }
 
   const NOT_DETAIL = "li.job-card-box, #boss-pro-panel, .zdl-settings-panel, .zdl-history-panel";
@@ -3891,6 +4153,36 @@
 .zdl-tag-input-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px;min-width:0}
 .zdl-tag-hint{flex-basis:100%;margin:0;color:var(--zdl-text-4);font-size:11px;line-height:1.6}
 .zdl-tag-hint.warn{color:#b45309}
+.zdl-wizard{margin-bottom:14px;border:1px solid #d6e3fb;border-radius:12px;background:linear-gradient(180deg,#f6f9ff 0%,#fff 70%);overflow:hidden}
+.zdl-wizard [hidden]{display:none!important}
+.zdl-wizard-head{display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;border:0;background:transparent;color:var(--zdl-ink);font:inherit;text-align:left;cursor:pointer}
+.zdl-wizard-head>svg{width:14px;height:14px;margin-left:auto;color:var(--zdl-text-4);transition:transform .2s}
+.zdl-wizard.open .zdl-wizard-head>svg{transform:rotate(90deg)}
+.zdl-wizard-mark{display:flex;width:28px;height:28px;flex:0 0 28px;box-sizing:border-box;padding:6px;border-radius:8px;background:var(--zdl-primary);color:#fff}
+.zdl-wizard-mark svg{width:100%;height:100%}
+.zdl-wizard-title{display:flex;flex-direction:column;min-width:0;line-height:1.45}
+.zdl-wizard-title strong{font-size:13px;font-weight:600}
+.zdl-wizard-title small{color:var(--zdl-text-3);font-size:11px}
+.zdl-wizard-body{padding:2px 12px 12px}
+.zdl-wizard-step{padding:10px 0;border-top:1px solid #e9eef7}
+.zdl-wizard-step-label{display:flex;align-items:baseline;gap:6px;margin-bottom:7px;color:var(--zdl-ink);font-size:12px;font-weight:500}
+.zdl-wizard-step-label small{color:var(--zdl-text-4);font-size:11px;font-weight:400}
+.zdl-wizard-index{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px;border-radius:50%;background:var(--zdl-accent);color:var(--zdl-primary);font-size:10px;font-weight:600;align-self:center}
+.zdl-wizard-chips{display:flex;flex-wrap:wrap;gap:6px}
+.zdl-wizard-inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;color:var(--zdl-text-2);font-size:12px}
+.zdl-wizard-select,.zdl-wizard-number{box-sizing:border-box;height:28px;padding:2px 6px;border:1px solid var(--zdl-border);border-radius:6px;background:#fff;color:var(--zdl-ink);font:inherit;font-size:12px}
+.zdl-wizard-number{width:64px;text-align:center}
+.zdl-wizard-check{display:flex;align-items:center;gap:6px;margin-top:7px;color:var(--zdl-text-2);font-size:12px;cursor:pointer}
+.zdl-wizard-check input{width:14px;height:14px;margin:0;accent-color:var(--zdl-primary);cursor:pointer}
+.zdl-wizard-extras{display:grid;grid-template-columns:1fr 1fr;column-gap:10px}
+.zdl-wizard-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding-top:10px;border-top:1px solid #e9eef7}
+.zdl-wizard-hint{margin-right:auto;color:var(--zdl-text-4);font-size:11px;line-height:1.5}
+.zdl-wizard-review{margin-top:10px;padding:10px 12px;border:1px solid var(--zdl-border);border-radius:9px;background:#fff}
+.zdl-wizard-review-title{margin:0 0 6px;color:var(--zdl-text-2);font-size:12px;line-height:1.6}
+.zdl-wizard-review-title.error{color:#dc2626}
+.zdl-wizard-review .zdl-wizard-actions{border-top:0;padding-top:8px}
+.zdl-advanced-heading{display:flex;align-items:baseline;gap:8px;margin:2px 2px 10px;color:var(--zdl-ink);font-size:12px;font-weight:600}
+.zdl-advanced-heading small{color:var(--zdl-text-4);font-size:11px;font-weight:400}
 .zdl-preview{display:flex;flex-direction:column;flex-shrink:0;max-height:min(46vh,420px);overflow:hidden;margin:0 0 12px;padding:9px 11px;border:1px solid var(--zdl-border);border-radius:9px;background:var(--zdl-secondary);color:var(--zdl-text-2);font-size:12px;line-height:1.6}
 .zdl-preview-head{display:flex;align-items:baseline;gap:8px}
 .zdl-preview-summary{flex:1;min-width:0}
