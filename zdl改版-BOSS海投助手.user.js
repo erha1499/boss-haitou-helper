@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.8.1
+// @version      1.8.2
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
 // @match        https://www.zhipin.com/*
@@ -2807,7 +2807,7 @@
   const JT_TITLE_INTERN = /实习|(?<![a-z])intern(?:ship)?s?(?![a-z])/gi;
   const JT_CAMPUS = /应届(?:毕业)?生?|校园招聘|校招|秋招|春招|管培生?|毕业生|(?<!\d)(?:20)?\d{2}\s*届/g;
   // “每周5天”可能是正式岗的作息，只认“至少/不少于/到岗 N 天”或每周 1-4 天
-  const JT_DESC_INTERN = /实习(?:期|生|岗|时长|周期|时间)|(?:每周|一周)(?:至少|不少于|到岗|出勤)\s*[\d一二三四五六]\s*天|(?:每周|一周)\s*[1-4一二三四]\s*天|实习.{0,6}可转正|转正实习/g;
+  const JT_DESC_INTERN = /实习(?:期|生|岗|时长|周期|时间)|(?:每周|一周)(?:至少|不少于|到岗|出勤)\s*[\d一二三四五六]\s*天|(?:每周|一周)\s*[1-4一二三四]\s*天|可转正|转正机会|转正实习/g;
   const JT_SOCIAL = /社招|社会招聘/g;
   const JT_OPEN = /(?:工作)?经验不限|无需(?:工作)?经验|不限(?:工作)?经验|无(?:工作)?经验要求|接受(?:无经验|零基础)/g;
   // “3年以上Java开发经验”“1-3年工作经验”“两年及以上相关经验”“3年+经验”
@@ -2846,9 +2846,11 @@
 
   // 返回 { kind: "years" | "soft" | "unknown", label, evidence, bucket?, types? }
   // years：写明了年限要求，属于硬性条件；soft：实习/校招/经验不限/社招等类型信号，命中任一勾选项即可。
-  function classifyJob({ title = "", tags = [], desc = "" }) {
+  function classifyJob({ title = "", tags = [], desc = "", salary = "" }) {
     const soft = new Map();
     const addSoft = (type, evidence) => { if (!soft.has(type)) soft.set(type, evidence); };
+    // 按天计薪（如“200-300元/天”）基本是实习岗，很多实习岗职位名里并不写“实习”
+    if (/元\s*\/\s*[天日]/.test(salary)) addSoft("intern", `薪资「${salary}」`);
     let cardYears = null;
     tags.map((t) => t.trim()).forEach((tag) => {
       if (/^(在校|应届|在校\/应届|在校生|应届生|应届毕业生)$/.test(tag)) addSoft("campus", `标签「${tag}」`);
@@ -2906,7 +2908,7 @@
   // 粗筛阶段只能看卡片：只有写明年限且不在范围内才排除，其余留到详情再判断
   function coarseJobTypeReject(info) {
     if (!jobTypeFilterActive()) return null;
-    const result = classifyJob({ title: info.title, tags: info.tags });
+    const result = classifyJob({ title: info.title, tags: info.tags, salary: info.salary });
     return result.kind === "years" && !jobTypeAccepted(result) ? result : null;
   }
 
@@ -3038,7 +3040,7 @@
       // 岗位类型分布（只看卡片和职位名，详情里的信息要打开岗位才知道）
       const typeCounts = {};
       rows.forEach((row) => {
-        const result = classifyJob({ title: row.info.title, tags: row.info.tags });
+        const result = classifyJob({ title: row.info.title, tags: row.info.tags, salary: row.info.salary });
         const key = result.kind === "years" ? "社招" : result.kind === "soft" ? JOB_SIGNAL_LABEL[result.types[0]] : "看详情才知道";
         typeCounts[key] = (typeCounts[key] || 0) + 1;
       });
@@ -3349,6 +3351,7 @@
           title: item.job,
           tags: [...(item.tags || []), ...detailTags],
           desc: cleanDesc(document.querySelector(".job-detail-body .desc")),
+          salary: item.salary,
         });
         if (!jobTypeAccepted(jobType)) {
           return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`);
