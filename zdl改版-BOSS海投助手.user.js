@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         zdl-BOSS海投助手
 // @namespace    https://github.com/yangshengzhou03
-// @version      1.9.0
+// @version      1.9.1
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
 // @match        https://www.zhipin.com/*
@@ -3119,7 +3119,9 @@
     { key: "frontend", label: "前端", exclusive: true, include: "前端|h5|vue|react|小程序", signature: "前端|h5" },
     { key: "testing", label: "测试", exclusive: true, include: "测试|测开|qa|质量保障", signature: "测试|测开|qa" },
     { key: "data", label: "数据/大数据", exclusive: true, include: "数据开发|大数据|数仓|etl|数据工程|spark|flink|bi", signature: "大数据|数仓|数据开发|etl" },
-    { key: "algorithm", label: "算法", exclusive: true, include: "算法|机器学习|深度学习|cv|nlp|推荐|搜索", signature: "算法|机器学习|深度学习|cv|nlp|推理优化" },
+    { key: "algorithm", label: "算法", exclusive: true,
+      include: "算法|机器学习|深度学习|强化学习|多模态|大模型训练|数据挖掘|计算机视觉|自然语言|语音识别|cv|nlp|ocr|slam|推荐|搜索",
+      signature: "算法|机器学习|深度学习|强化学习|cv|nlp|推理优化" },
     { key: "client", label: "客户端/移动端", exclusive: true, include: "客户端|安卓|android|ios|移动端|鸿蒙|harmonyos|flutter|app开发", signature: "客户端|安卓|android|ios|移动端|鸿蒙|flutter" },
     { key: "embedded", label: "嵌入式/硬件", exclusive: true, include: "嵌入式|硬件|单片机|驱动|fpga|stm32|plc", signature: "嵌入式|硬件|单片机|fpga|驱动开发" },
     { key: "ops", label: "运维/DevOps", exclusive: true, include: "运维|devops|sre|k8s|云原生", signature: "运维|devops|sre" },
@@ -3134,6 +3136,7 @@
     { key: "cpp", label: "C/C++", title: "c\\+\\+|cpp", jd: "c\\+\\+|cpp|qt" },
     { key: "js", label: "JS/TS", title: "javascript|typescript|node*", jd: "javascript|typescript|vue|react|node*" },
     { key: "php", label: "PHP", title: "php", jd: "php|laravel|thinkphp" },
+    { key: "dl", label: "深度学习框架", title: "pytorch|tensorflow", jd: "pytorch|tensorflow|paddle*|cuda|transformers|深度学习框架" },
   ];
   const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
   const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
