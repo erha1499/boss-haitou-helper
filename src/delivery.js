@@ -1,7 +1,8 @@
 import { isJobsPage } from "./config.js";
 import { Core, stopProcess } from "./core.js";
 import { elements, state } from "./state.js";
-import { UI, UI_ICONS } from "./ui.js";
+import { UI_ICONS } from "./ui/icons.js";
+import { UI } from "./ui/index.js";
 
 export const DELIVERY_STATS_KEY = "zdlDeliveryStatsV1";
 export const CURRENT_ACCOUNT_KEY = "zdlAccountPageV1:";

@@ -1,7 +1,7 @@
 import { CONFIG, RECRUITER_STATUS_OPTIONS } from "./config.js";
 import { JOB_TYPES, JOB_TYPE_LABEL, JOB_YEARS, JOB_YEARS_LABEL, LEGACY_JOB_TYPES, normalizeJobTypeFilter } from "./rules/job-type.js";
 import { elements, state } from "./state.js";
-import { UI } from "./ui.js";
+import { UI } from "./ui/index.js";
 
 export function saveTags() {
   invalidateConfigUndo();

@@ -37,7 +37,7 @@
 
 面板默认固定显示。取消标题栏的图钉后，点击页面其他位置会把面板收起成小圆点，点圆点即可展开。
 
-每次投递结束，日志会汇总本次投递和跳过的数量，以及各条规则跳过了多少个岗位，方便判断哪条规则过严。已经沟通过的岗位会被记住，下次直接跳过。
+每次投递结束，日志会汇总本次投递和跳过的数量，以及各条规则跳过了多少个岗位，方便判断哪条规则过严。已经沟通过的岗位会被记住，下次直接跳过。中途停止后再点「开始投递」会接着往下投，已判断过的岗位不再重复打开；改了筛选规则后再开始，当前页的岗位会按新规则重新判断。
 
 ## 求职向导
 
@@ -157,12 +157,12 @@ BOSS 的经验标签只有“在校生、应届生、经验不限、1年以内�
 
 ## 开发
 
-源码在 `src/` 下按模块拆开，用 [Rollup](https://rollupjs.org/) 打包成仓库根目录的单个 `.user.js`（脚本管理器从这个文件检查更新，所以构建结果也要提交）。需要 Node.js 20 以上。
+源码在 `src/` 下按模块拆开，用 [Rollup](https://rollupjs.org/) 打包成仓库根目录的单个 `.user.js`（脚本管理器从这个文件检查更新，所以构建结果也要提交）。需要 Node.js 22 以上。
 
 ```bash
 npm install
 npm run build   # 生成 zdl改版-BOSS海投助手.user.js
-npm test        # 单元测试，同时检查 .user.js 是否已用最新源码构建
+npm test        # 单元测试和投递流程测试，同时检查 .user.js 是否已用最新源码构建
 ```
 
 | 目录 / 文件 | 内容 |
@@ -172,9 +172,10 @@ npm test        # 单元测试，同时检查 .user.js 是否已用最新源码�
 | `src/boss/selectors.js` | 脚本用到的 BOSS 页面选择器和按钮文字，BOSS 改版后先改这里 |
 | `src/boss/self-check.js` | 页面自检 |
 | `src/core.js` | 投递流程：滚动加载、粗筛、打开详情细筛、点沟通 |
-| `src/ui.js`、`src/preview.js`、`src/styles.js` | 面板、设置、实时预览和样式 |
+| `src/ui/` | 界面：主面板、账号、新手引导、筛选设置、配置分享、求职向导、投递历史，在 `index.js` 里拼成一个 `UI` 对象 |
+| `src/preview.js`、`src/styles.js` | 实时预览和样式 |
 | `src/delivery.js`、`src/contacted.js`、`src/settings-store.js`、`src/state.js` | 账号与投递计数、已沟通记录、配置导入导出、运行状态 |
-| `test/` | 单元测试（`node --test`） |
+| `test/` | 单元测试；`delivery-flow.test.js` 在模拟的 BOSS 职位页（`test/support/fake-boss.js`）上跑完整投递流程。推送到 GitHub 后会自动运行 |
 
 改判断规则时，先在 `test/` 里加一条能复现问题的用例，再改规则。
 

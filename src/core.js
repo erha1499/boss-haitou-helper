@@ -1,15 +1,39 @@
 import { cleanDesc, findInDetail, getDetailRoot, highlightCard } from "./boss/page.js";
+import { BOSS } from "./boss/selectors.js";
+import { checkJobCards, createStreakGuard, streakStopMessage } from "./boss/self-check.js";
 import { CONFIG, isJobsPage } from "./config.js";
 import { ContactedJobs } from "./contacted.js";
 import { DELIVERY_LOCK_NAME, Delivery } from "./delivery.js";
-import { coarseRejectReason, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
+import { coarseExplain, coarseRejectReason, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
 import { classifyJob } from "./rules/job-type.js";
 import { keywordSnippet, matchKeyword } from "./rules/keywords.js";
-import { formatConfigValue } from "./settings-store.js";
+import { formatConfigValue, getCurrentConfig } from "./settings-store.js";
 import { saveLogEntries, state } from "./state.js";
-import { showNotification } from "./ui.js";
-import { BOSS } from "./boss/selectors.js";
-import { checkJobCards, createStreakGuard, streakStopMessage } from "./boss/self-check.js";
+import { showNotification } from "./ui/notify.js";
+
+// 打开过详情的岗位卡片会记下“哪个账号、用哪套规则判断过”。同一套规则下再开始投递时跳过，
+// 中途停下再继续能接着投；改了规则后重新判断。详情加载超时的只在本次投递里跳过。
+function rulesKey() {
+  const { targetCount, ...rules } = getCurrentConfig();
+  const text = JSON.stringify(rules);
+  let hash = 5381;
+  for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
+  return hash.toString(36);
+}
+
+const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id;
+
+// 列表里没有可投的岗位时，说清楚是投完了还是规则没匹配上。
+function listExhaustedMessage(total, fresh, contacted, rejected) {
+  if (!total) return "当前列表没有岗位，本次结束";
+  if (!fresh) return `当前列表的 ${total} 个岗位都已处理完，本次结束。可以换城市或搜索词继续`;
+  const reasons = Object.entries(rejected).sort((a, b) => b[1] - a[1]);
+  const top = reasons.slice(0, 4).map(([label, n]) => `${label} ${n}`).join("、");
+  const ruled = fresh - contacted;
+  if (!ruled) return `列表已到底，剩下的 ${fresh} 个岗位都已沟通过，本次结束。可以换城市或搜索词继续`;
+  return `列表已到底，剩下的 ${ruled} 个新岗位都不符合筛选规则（${top}${reasons.length > 4 ? " 等" : ""}），本次结束。`
+    + "可以在「筛选设置」顶部的预览里看哪条规则挡得最多，或换城市、搜索词继续";
+}
 
 export const Core = {
   async startProcessing(run) {
@@ -47,7 +71,12 @@ export const Core = {
       }
 
       if (!Delivery.isCurrent(run)) break;
-      if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) break;
+      if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) {
+        this.log(state.delivery.dailyCount >= state.targetCount
+          ? `已达到今日投递目标 ${state.targetCount} 次，自动停止`
+          : `今日已投递 ${state.delivery.dailyCount} 次，已达每日上限 ${CONFIG.DAILY_LIMIT}，自动停止`);
+        break;
+      }
 
       state.jobIndexOffset += state.jobList.length;
       roundIndex++;
@@ -75,7 +104,7 @@ export const Core = {
       const countFiltered = () => {
         const contacted = ContactedJobs.setFor(run.uid);
         return Array.from(document.querySelectorAll(cardSelector)).filter((card) =>
-          card.dataset.zdlProcessed !== run.uid && !coarseRejectReason(readCardInfo(card), contacted)).length;
+          !isHandled(card, run) && !coarseRejectReason(readCardInfo(card), contacted)).length;
       };
 
       const scrollStep = async () => {
@@ -134,14 +163,22 @@ export const Core = {
       const contacted = ContactedJobs.setFor(run.uid);
       const cards = document.querySelectorAll(BOSS.jobCard);
       let skippedContacted = 0;
+      let fresh = 0;
+      const rejected = {};
+      // 粗筛没通过的只在本次投递、同一套规则下不再重复统计；投递中改了规则会重新判断
+      const coarseMark = `${run.id}:${rulesKey()}`;
       state.jobList = [];
       cards.forEach((card) => {
-        if (card.dataset.zdlProcessed === run.uid) return;
+        if (isHandled(card, run) || card.dataset.zdlCoarse === coarseMark) return;
+        fresh++;
         const info = readCardInfo(card);
-        const reason = coarseRejectReason(info, contacted);
+        const { reason, label } = coarseExplain(info, contacted);
         if (reason === "contacted") {
           skippedContacted++;
-          card.dataset.zdlProcessed = run.uid;
+          card.dataset.zdlProcessed = run.mark;
+        } else if (reason) {
+          rejected[label] = (rejected[label] || 0) + 1;
+          card.dataset.zdlCoarse = coarseMark;
         }
         if (reason) return;
         state.jobList.push({
@@ -151,9 +188,10 @@ export const Core = {
       });
 
       const contactedNote = skippedContacted ? `，跳过已沟通过的 ${skippedContacted} 个` : "";
-      this.log(`筛选完成，共 ${cards.length} 个岗位，匹配 ${state.jobList.length} 个${contactedNote}`);
+      const scope = fresh === cards.length ? `共 ${cards.length} 个岗位` : `新加载 ${fresh} 个岗位（列表共 ${cards.length} 个）`;
+      this.log(`筛选完成，${scope}，匹配 ${state.jobList.length} 个${contactedNote}`);
       if (!state.jobList.length) {
-        this.log("没有符合条件的职位");
+        this.log(listExhaustedMessage(cards.length, fresh, skippedContacted, rejected));
         stopProcess(run);
         return;
       }
@@ -175,16 +213,19 @@ export const Core = {
       run.skips[key] = (run.skips[key] || 0) + 1;
       state.currentIndex++;
     };
-    cardEl.dataset.zdlProcessed = run.uid;
     highlightCard(cardEl);
     const detailReady = await this.openDetail(item, run);
+    // 中途停止时不打标记，下次开始会重新处理这个岗位
     if (!Delivery.isCurrent(run)) return;
     if (!detailReady) {
+      // 加载超时的岗位本次不再试，下次开始时重试
+      cardEl.dataset.zdlTimeout = run.id;
       skip("详情加载超时");
       this.stopIfBroken(run, "detail");
       return;
     }
     run.guard.ok("detail");
+    cardEl.dataset.zdlProcessed = run.mark;
 
     let activeTime = "未知";
     const onlineTag = findInDetail(BOSS.recruiterOnline);
@@ -506,7 +547,7 @@ export const Core = {
     text.className = "zdl-log-text";
     text.innerHTML = rich(message);
     item.append(timeEl, text);
-    if (/本次共投递|自动停止|投递已停止|已离开职位页/.test(message)) item.classList.add("zdl-log-key");
+    if (/本次共投递|本次结束|自动停止|投递已停止|已离开职位页/.test(message)) item.classList.add("zdl-log-key");
     if (/投递已停止|失败|异常/.test(message)) item.classList.add("zdl-log-error");
     return item;
   },
@@ -553,7 +594,10 @@ export async function toggleProcess() {
     showNotification("当前浏览器不支持投递任务锁，请使用新版 Chrome 或 Edge", "error");
     return;
   }
-  const run = { uid: state.account.id, started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard() };
+  const run = {
+    uid: state.account.id, id: Math.random().toString(36).slice(2), mark: "",
+    started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(),
+  };
   state.activeRun = run;
   Delivery.render();
   try {
@@ -570,6 +614,7 @@ export async function toggleProcess() {
         return;
       }
       if (!Core.checkPageBeforeStart()) return;
+      run.mark = `${run.uid}:${rulesKey()}`;
       state.jobList = [];
       state.currentIndex = 0;
       state.jobIndexOffset = 0;

@@ -4,7 +4,9 @@ import { CURRENT_ACCOUNT_KEY, DELIVERY_STATS_KEY, Delivery } from "./delivery.js
 import { CONFIG_STORAGE_KEYS, CONFIG_UNDO_KEY, markConfigExternalChanged } from "./settings-store.js";
 import { saveLogEntries, state } from "./state.js";
 import { injectCSS } from "./styles.js";
-import { SVG_ICON, UI, showNotification } from "./ui.js";
+import { SVG_ICON } from "./ui/icons.js";
+import { UI } from "./ui/index.js";
+import { showNotification } from "./ui/notify.js";
 
 async function init() {
   try {

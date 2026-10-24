@@ -1,10 +1,10 @@
+import { BOSS } from "./boss/selectors.js";
 import { isJobsPage } from "./config.js";
 import { ContactedJobs } from "./contacted.js";
 import { coarseExplain, readCardInfo } from "./filters.js";
 import { JOB_SIGNAL_LABEL, classifyJob } from "./rules/job-type.js";
 import { matchKeyword } from "./rules/keywords.js";
 import { elements, state } from "./state.js";
-import { BOSS } from "./boss/selectors.js";
 
 // 筛选设置里的实时预览：用当前页已加载的岗位卡片试跑粗筛，不点开岗位、不消耗投递次数。
 export const CoarsePreview = {

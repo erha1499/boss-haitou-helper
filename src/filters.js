@@ -1,9 +1,9 @@
+import { BOSS } from "./boss/selectors.js";
 import { ContactedJobs } from "./contacted.js";
 import { coarseJobTypeRejectBy, explainCoarse } from "./rules/coarse.js";
 import { isJobTypeFilterActive, jobTypeMatches } from "./rules/job-type.js";
 import { decodeSalary, salaryInFilter } from "./rules/salary.js";
 import { state } from "./state.js";
-import { BOSS } from "./boss/selectors.js";
 
 export function readCardInfo(card) {
   return {
