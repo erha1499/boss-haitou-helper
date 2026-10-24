@@ -17,7 +17,7 @@
 // ==/UserScript==
 
 (function () {
-  "use strict";
+  'use strict';
 
   const CONFIG = {
     BASIC_INTERVAL: 1000,
@@ -42,6 +42,275 @@
       return defaultValue;
     }
   };
+
+  const RECRUITER_STATUS_OPTIONS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃", "本周活跃", "本月活跃", "半年前活跃", "未知"];
+
+  // 脚本读取 BOSS 页面时用到的选择器和按钮文字都在这里。BOSS 改版后先改这一个文件。
+  // 自检（self-check.js）也按这里的定义检查页面。
+  const BOSS = {
+    // 左侧职位列表卡片
+    jobCard: "li.job-card-box",
+    cardTitle: ".job-name",
+    cardCompany: ".boss-name",
+    cardAddress: [".job-address-desc", ".company-location", ".job-area"], // 按顺序取第一个找到的
+    cardSalary: ".job-salary",
+    cardLogo: ".boss-logo img",
+    cardBadgeIcon: ".job-tag-icon", // alt 含“猎头”的是猎头岗位
+    cardTags: ".tag-list li",
+    cardLink: "a[href*='job_detail']",
+
+    // 右侧职位详情
+    detailDesc: ".job-detail-body .desc",
+    detailRoot: ".job-detail-container, .job-detail-box",
+    detailTitle: ".job-name",
+    detailTags: ".tag-list li", // 经验、学历
+    detailSkillTags: ".job-label-list li",
+    recruiterOnline: ".boss-online-tag",
+    recruiterActive: ".boss-active-time",
+    recruiterTitle: ".boss-info-attr",
+    chatButton: "a.op-btn-chat",
+    chatButtonNew: "立即沟通",
+    chatButtonContacted: "继续沟通",
+
+    // 点“立即沟通”后的弹窗
+    limitDialog: ".chat-block-dialog",
+    limitDialogBody: ".chat-block-body",
+    limitReachedTexts: ["150", "休息一下", "无法进行沟通"], // 弹窗正文含其一表示今日已达上限
+    dialogConfirm: ".default-btn.sure-btn",
+    dialogCancel: ".default-btn.cancel-btn",
+    stayOnPageText: "留在此页", // 投递成功弹窗里的按钮
+  };
+
+  function cleanDesc(descElement) {
+    if (!descElement) return "";
+    // BOSS 会在描述里插入隐藏的干扰文字（如“现场<span>kanzhun</span>面试”），
+    // 它们的隐藏样式写在描述内嵌的 <style> 里。先按样式找出这些元素整个删掉，再去掉 style 本身。
+    const clone = descElement.cloneNode(true);
+    const hiddenClasses = new Set();
+    clone.querySelectorAll("style").forEach((style) => {
+      const rules = style.textContent.match(/\.[\w-]+\s*\{[^}]*\}/g) || [];
+      rules.forEach((rule) => {
+        if (/display\s*:\s*none|visibility\s*:\s*hidden|width\s*:\s*0\.\d+px|font-size\s*:\s*0(?![.\d])/i.test(rule)) {
+          hiddenClasses.add(rule.slice(1, rule.indexOf("{")).trim());
+        }
+      });
+      style.remove();
+    });
+    clone.querySelectorAll("[class]").forEach((el) => {
+      if ([...el.classList].some((cls) => hiddenClasses.has(cls))) el.remove();
+    });
+    clone.querySelectorAll("[style]").forEach((el) => {
+      if (/display\s*:\s*none|visibility\s*:\s*hidden/i.test(el.getAttribute("style"))) el.remove();
+    });
+    let text = clone.textContent;
+    // 兜底：样式规则变了时，仍去掉常见的干扰词（大小写不敏感），长模式优先
+    text = text.replace(/来自\s*boss\s*直聘/gi, "");
+    text = text.replace(/来自\s*boss/gi, "");
+    text = text.replace(/boss\s*直聘/gi, "");
+    text = text.replace(/\bboss\b|kanzhun/gi, "");
+    text = text.replace(/直聘/g, "");
+    // 去除换行、回车、制表符，压缩连续空白
+    text = text.replace(/[\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
+    return text;
+  }
+
+  const NOT_DETAIL = `${BOSS.jobCard}, #boss-pro-panel, .zdl-settings-panel, .zdl-history-panel`;
+
+  function getDetailRoot() {
+    return document.querySelector(BOSS.detailDesc)?.closest(BOSS.detailRoot) || document;
+  }
+
+  // 优先在右侧详情区域里找；找不到时在整页找，但排除左侧列表卡片和脚本自己的面板。
+  function findInDetail(selector) {
+    const root = getDetailRoot();
+    const inRoot = root !== document ? root.querySelector(selector) : null;
+    return inRoot || Array.from(document.querySelectorAll(selector)).find((el) => !el.closest(NOT_DETAIL)) || null;
+  }
+
+  function highlightCard(card) {
+    document.querySelectorAll(".zdl-current-card").forEach((el) => el.classList.remove("zdl-current-card"));
+    card?.classList.add("zdl-current-card");
+  }
+
+  // 记录各账号已沟通过的岗位 id，下次直接在粗筛阶段跳过，不再逐个点开。
+  const CONTACTED_JOBS_KEY = "zdlContactedJobsV1";
+  const CONTACTED_JOBS_LIMIT = 3000;
+  const ContactedJobs = {
+    idOf(card) {
+      const href = card.querySelector(BOSS.cardLink)?.getAttribute("href") || "";
+      return href.match(/job_detail\/([^./?#]+)/)?.[1] || "";
+    },
+
+    _read() {
+      try {
+        const data = JSON.parse(localStorage.getItem(CONTACTED_JOBS_KEY) || "{}");
+        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      } catch (error) {
+        return {};
+      }
+    },
+
+    setFor(uid) {
+      const ids = this._read()[uid];
+      return new Set(Array.isArray(ids) ? ids : []);
+    },
+
+    add(uid, jobId) {
+      if (!uid || !jobId) return;
+      const data = this._read();
+      const ids = Array.isArray(data[uid]) ? data[uid] : [];
+      if (ids.includes(jobId)) return;
+      ids.push(jobId);
+      data[uid] = ids.slice(-CONTACTED_JOBS_LIMIT);
+      try { localStorage.setItem(CONTACTED_JOBS_KEY, JSON.stringify(data)); } catch (error) {}
+    },
+  };
+
+  // ---------- 岗位类型与经验 ----------
+  // BOSS 的经验标签只有“在校生/应届生/经验不限/1年以内/1-3年/…”，没有“实习”，
+  // 所以综合卡片标签、职位名和职位描述来判断。
+  const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"], ["open", "经验不限/未标明"]];
+  const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
+  const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
+  const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
+  // 日志里显示的具体类型名（“经验不限”和“未标明”在筛选上是同一档，显示时区分开）
+  const JOB_SIGNAL_LABEL = { intern: "实习", campus: "校招/应届", social: "社招", open: "经验不限" };
+  const LEGACY_JOB_TYPES = { any: "open", unknown: "open" };
+
+  function normalizeJobTypeFilter(value) {
+    const pick = (list, all, legacy = {}) => {
+      if (!Array.isArray(list)) return all.map(([k]) => k);
+      const mapped = list.map((k) => legacy[k] || k);
+      return all.map(([k]) => k).filter((k) => mapped.includes(k));
+    };
+    return { types: pick(value?.types, JOB_TYPES, LEGACY_JOB_TYPES), years: pick(value?.years, JOB_YEARS) };
+  }
+
+  const CN_DIGITS = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+  function parseYearNumber(text) {
+    if (/^\d+$/.test(text)) return Number(text);
+    if (text.length === 1) return CN_DIGITS[text] ?? NaN;
+    if (text[0] === "十") return 10 + (CN_DIGITS[text[1]] ?? NaN);
+    if (text[1] === "十") return (CN_DIGITS[text[0]] ?? NaN) * 10;
+    return NaN;
+  }
+  const yearsBucket = (n) => (n < 1 ? "y0_1" : n < 3 ? "y1_3" : n < 5 ? "y3_5" : "y5p");
+
+  // 命中位置前面紧挨着否定词时不算，比如“不接受实习生”“非应届”“不设实习期”
+  const isNegated = (text, index) => /(不接受|不招收?|不要求?|不考虑|不需要|不设|不提供|无需|不是|非)$/.test(text.slice(Math.max(0, index - 5), index));
+  // 命中位置后面跟着“优先/加分”等，说明只是加分项，不是硬性要求
+  const isPreferred = (text, end) => /^[^，,。；;！!\n]{0,4}?(?:者|的)?(?:优先|更佳|为佳|最佳|加分|更好)/.test(text.slice(end, end + 10));
+  function findSignal(text, regex, guard) {
+    regex.lastIndex = 0;
+    let match;
+    while ((match = regex.exec(text))) {
+      if (!isNegated(text, match.index) && !(guard && guard(text, match))) return match;
+    }
+    return null;
+  }
+
+  const N = "(\\d{1,2}|[一二两三四五六七八九十]{1,2})";
+  const JT_TITLE_INTERN = /实习|(?<![a-z])intern(?:ship)?s?(?![a-z])/gi;
+  const JT_CAMPUS = /应届(?:毕业)?生?|校园招聘|校招|秋招|春招|管培生?|毕业生|(?<!\d)(?:20)?\d{2}\s*届/g;
+  // “每周5天”可能是正式岗的作息，只认“至少/不少于/到岗 N 天”或每周 1-4 天
+  const JT_DESC_INTERN = /实习(?:期|生|岗|时长|周期|时间)|(?:每周|一周)(?:至少|不少于|到岗|出勤)\s*[\d一二三四五六]\s*天|(?:每周|一周)\s*[1-4一二三四]\s*天|可转正|转正机会|转正实习/g;
+  const JT_SOCIAL = /社招|社会招聘/g;
+  const JT_OPEN = /(?:工作)?经验不限|无需(?:工作)?经验|不限(?:工作)?经验|无(?:工作)?经验要求|接受(?:无经验|零基础)/g;
+  // “3年以上Java开发经验”“1-3年工作经验”“两年及以上相关经验”“3年+经验”
+  const JT_YEARS = new RegExp(`(?<![\\d.])${N}\\s*\\+?\\s*(?:[-~～至到]\\s*${N}\\s*)?年\\s*\\+?(?:及|或)?(以上|以下|以内|左右)?(?:的)?([^，,。；;！!、\\n]{0,10}?)经验`, "g");
+  // “经验3年以上”“经验要求：3-5年”“工作年限：3年以上”
+  const JT_YEARS_AFTER = new RegExp(`(?:经验|工作年限|从业年限)(?:要求)?\\s*[:：]?\\s*${N}\\s*(?:[-~～至到]\\s*${N}\\s*)?年(以上|及以上|左右)?`, "g");
+
+  function snippetAt(text, index, length, radius = 10) {
+    const start = Math.max(0, index - radius);
+    const end = Math.min(text.length, index + length + radius);
+    return `${start > 0 ? "…" : ""}${text.slice(start, index).trimStart()}「${text.slice(index, index + length)}」`
+      + `${text.slice(index + length, end).trimEnd()}${end < text.length ? "…" : ""}`;
+  }
+
+  function descYearsRequirement(desc) {
+    let best = null;
+    const consider = (n, match, upperBound) => {
+      if (!Number.isFinite(n) || n > 15) return;
+      if (isNegated(desc, match.index) || isPreferred(desc, match.index + match[0].length)) return;
+      if (upperBound) {
+        if (n > 1) return; // “3年以下经验”只是上限，不当作硬性要求
+        n = 0;
+      }
+      if (!best || n > best.years) best = { years: n, evidence: `详情：${snippetAt(desc, match.index, match[0].length)}` };
+    };
+    let match;
+    JT_YEARS.lastIndex = 0;
+    while ((match = JT_YEARS.exec(desc))) {
+      if (/实习|在校|校园/.test(match[4] || "")) continue; // “1年以上实习经验”说的是对候选人的要求
+      consider(parseYearNumber(match[1]), match, match[3] === "以下" || match[3] === "以内");
+    }
+    JT_YEARS_AFTER.lastIndex = 0;
+    while ((match = JT_YEARS_AFTER.exec(desc))) consider(parseYearNumber(match[1]), match, false);
+    return best;
+  }
+
+  // 返回 { kind: "years" | "soft" | "unknown", label, evidence, bucket?, types? }
+  // years：写明了年限要求，属于硬性条件；soft：实习/校招/经验不限/社招等类型信号，命中任一勾选项即可。
+  function classifyJob({ title = "", tags = [], desc = "", salary = "" }) {
+    const soft = new Map();
+    const addSoft = (type, evidence) => { if (!soft.has(type)) soft.set(type, evidence); };
+    // 按天计薪（如“200-300元/天”）基本是实习岗，很多实习岗职位名里并不写“实习”
+    if (/元\s*\/\s*[天日]/.test(salary)) addSoft("intern", `薪资「${salary}」`);
+    let cardYears = null;
+    tags.map((t) => t.trim()).forEach((tag) => {
+      if (/^(在校|应届|在校\/应届|在校生|应届生|应届毕业生)$/.test(tag)) addSoft("campus", `标签「${tag}」`);
+      else if (tag === "经验不限") addSoft("open", `标签「${tag}」`);
+      else if (/^\d+\s*天\/周$/.test(tag)) addSoft("intern", `标签「${tag}」`);
+      else if (/^1年以[内下]$/.test(tag)) cardYears = { years: 0, evidence: `标签「${tag}」` };
+      else {
+        const m = tag.match(/^(\d+)\s*-\s*\d+\s*年$/) || tag.match(/^(\d+)\s*年以上$/);
+        if (m) cardYears = { years: Number(m[1]), evidence: `标签「${tag}」` };
+      }
+    });
+    // “x个月”标签可能是实习周期，也可能是短期项目，只在没有写年限时当作实习信号
+    const monthTag = tags.find((t) => /^\d+\s*个月$/.test(t.trim()));
+    if (monthTag && !cardYears) addSoft("intern", `标签「${monthTag.trim()}」`);
+    if (findSignal(title, JT_TITLE_INTERN)) addSoft("intern", `职位名「${title}」`);
+    if (findSignal(title, JT_CAMPUS)) addSoft("campus", `职位名「${title}」`);
+    let descYears = null;
+    if (desc) {
+      const notProbation = (text, m) => /试用期/.test(text.slice(Math.max(0, m.index - 12), m.index));
+      [["intern", JT_DESC_INTERN, notProbation], ["campus", JT_CAMPUS], ["social", JT_SOCIAL], ["open", JT_OPEN]].forEach(([type, regex, guard]) => {
+        const hit = findSignal(desc, regex, guard);
+        if (hit) addSoft(type, `详情：${snippetAt(desc, hit.index, hit[0].length)}`);
+      });
+      descYears = descYearsRequirement(desc);
+    }
+    const internStrong = soft.has("intern");
+    // BOSS 的实习岗经验一栏常写“在校/应届”，有实习信号时按实习处理
+    if (internStrong) soft.delete("campus");
+    // 卡片“1年以内”对实习岗只是默认值，不当作年限要求
+    const hard = [internStrong && cardYears?.years < 1 ? null : cardYears, descYears]
+      .filter(Boolean).sort((x, y) => y.years - x.years)[0];
+    if (hard) {
+      const bucket = yearsBucket(hard.years);
+      return { kind: "years", bucket, label: `社招·${JOB_YEARS_LABEL[bucket]}`, evidence: hard.evidence };
+    }
+    if (soft.size > 1) soft.delete("open");
+    if (soft.size) {
+      const types = [...soft.keys()];
+      return { kind: "soft", types, label: types.map((t) => JOB_SIGNAL_LABEL[t]).join("/"), evidence: soft.get(types[0]) };
+    }
+    return { kind: "unknown", label: "未标明", evidence: "" };
+  }
+
+  // filter 为 normalizeJobTypeFilter 的结果：{ types: [...], years: [...] }
+  const isJobTypeFilterActive = (filter) => filter.types.length < JOB_TYPES.length
+    || (filter.types.includes("social") && filter.years.length < JOB_YEARS.length);
+
+  function jobTypeMatches(result, { types, years }) {
+    if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);
+    if (result.kind === "soft") {
+      return result.types.some((t) => (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
+    }
+    return types.includes("open");
+  }
 
   const state = {
     isRunning: false,
@@ -139,245 +408,717 @@
     emptyRulesHint: null,
   };
 
-  const DELIVERY_STATS_KEY = "zdlDeliveryStatsV1";
-  const CURRENT_ACCOUNT_KEY = "zdlAccountPageV1:";
-  const DELIVERY_LOCK_NAME = "zdl-boss-delivery";
-  const Delivery = {
-    normalizeUid(value) {
-      const id = String(value ?? "");
-      return /^[1-9]\d*$/.test(id) ? id : "";
-    },
-
-    maskUid(value) {
-      const id = this.normalizeUid(value);
-      if (!id) return "未知账号";
-      return id.length <= 4 ? "*".repeat(id.length)
-        : id.slice(0, 2) + "*".repeat(id.length - 4) + id.slice(-2);
-    },
-
-    inlineUid(text) {
-      const assignment = /(?:^|[;\n])\s*(?:(?:var|let|const)\s+)?(?:window\.)?_PAGE\s*=\s*\{/.exec(text);
-      if (!assignment) return "";
-      let depth = 1, quote = "", escaped = false, fieldStart = true;
-      const start = assignment.index + assignment[0].length;
-      for (let i = start; i < text.length && depth; i++) {
-        const char = text[i];
-        if (quote) {
-          if (escaped) escaped = false;
-          else if (char === "\\") escaped = true;
-          else if (char === quote) quote = "";
-          continue;
-        }
-        if (char === "/" && text[i + 1] === "/") {
-          const end = text.indexOf("\n", i + 2);
-          i = end < 0 ? text.length : end;
-          continue;
-        }
-        if (char === "/" && text[i + 1] === "*") {
-          const end = text.indexOf("*/", i + 2);
-          if (end < 0) return "";
-          i = end + 1;
-          continue;
-        }
-        if (depth === 1 && fieldStart) {
-          const match = text.slice(i).match(/^\s*(?:uid|"uid"|'uid')\s*:\s*(?:"([1-9]\d*)"|'([1-9]\d*)'|([1-9]\d*))\s*(?=[,}])/);
-          if (match) return match[1] || match[2] || match[3];
-          if (!/\s/.test(char)) fieldStart = false;
-        }
-        if (char === '"' || char === "'" || char === "`") quote = char;
-        else if (char === "{" || char === "[") depth++;
-        else if (char === "}" || char === "]") depth--;
-        if (char === "," && depth === 1) fieldStart = true;
+  function saveLogEntries() {
+    try {
+      if (state.logEntries.length > CONFIG.MAX_LOG_ENTRIES) {
+        state.logEntries.splice(0, state.logEntries.length - CONFIG.MAX_LOG_ENTRIES);
       }
-      return "";
-    },
+      localStorage.setItem("zdlLogEntries", JSON.stringify(state.logEntries));
+    } catch (e) {
+      // localStorage 写入失败（存储满 / 无痕模式等），静默忽略
+    }
+  }
 
-    readUid() {
-      // SPA 插入的 script 可能没有执行，只提取 _PAGE 中的 uid，不执行脚本。
-      const ids = new Set();
-      for (const script of document.querySelectorAll("script:not([src])")) {
-        const id = this.inlineUid(script.textContent);
-        if (id) ids.add(id);
-      }
-      let runtimeId = "";
-      try { runtimeId = this.normalizeUid(window._PAGE?.uid); } catch (error) {}
-      if (runtimeId) ids.add(runtimeId);
-      return ids.size === 1 ? [...ids][0] : "";
-    },
+  state.jobTypeFilter = normalizeJobTypeFilter(getStoredJSON("zdlJobTypeFilter", null));
 
-    syncAccountSignal(id) {
-      const published = id && state.account.publishedUid !== id;
-      // 各页分开发布，避免旧页面的并发写入覆盖新账号公告。
-      if (published) {
-        const key = `${CURRENT_ACCOUNT_KEY}${state.account.pageStartedAt}:${state.account.signalId}`;
-        localStorage.setItem(key, JSON.stringify({ uid: id, pageStartedAt: state.account.pageStartedAt }));
-        state.account.publishedUid = id;
-      }
-      const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
-        .filter((key) => key?.startsWith(CURRENT_ACCOUNT_KEY));
-      const olderKeys = [];
-      for (const key of keys) {
-        const raw = localStorage.getItem(key);
-        if (raw === null) continue;
-        const signal = JSON.parse(raw);
-        if (!this.normalizeUid(signal?.uid) || !Number.isFinite(signal.pageStartedAt)) throw new Error("账号同步记录异常");
-        if (signal.pageStartedAt < state.account.pageStartedAt) olderKeys.push(key);
-        else if (id && signal.uid !== id) {
-          state.account.needsReload = true;
-          stopProcess();
-        }
-      }
-      // 新页面只清理比自己旧的公告，不触碰账号投递记录。
-      if (published && !state.account.needsReload) olderKeys.forEach((key) => localStorage.removeItem(key));
-    },
+  // 英文按整词匹配：关键词边缘是字母时，紧挨着的字符不能也是字母（java 不匹配 javascript），
+  // 中文不受影响。允许复数 s（agent 匹配 agents）；末尾加 * 表示前缀（spring* 匹配 springboot）。
+  // 关键词支持正则，不是合法正则时按普通文字匹配（如 c++）。
+  const LETTER_EDGE = "(?:(?<![a-z])|(?![a-z]))";
+  const keywordRegexCache = new Map();
 
-    readStats() {
-      const raw = localStorage.getItem(DELIVERY_STATS_KEY);
-      const validRecord = (record) => record && typeof record.dailyDate === "string"
-        && Number.isSafeInteger(record.dailyCount) && record.dailyCount >= 0
-        && Number.isSafeInteger(record.totalCount) && record.totalCount >= record.dailyCount;
-      if (raw !== null) {
-        const stats = JSON.parse(raw);
-        if (stats?.version !== 1 || !validRecord(stats.machine) || !stats.accounts
-          || typeof stats.accounts !== "object" || Array.isArray(stats.accounts)
-          || Object.entries(stats.accounts).some(([id, record]) => !this.normalizeUid(id) || !validRecord(record))) {
-          throw new Error("投递记录格式异常，请先备份并检查本机记录");
-        }
-        return stats;
-      }
-      // 旧记录没有账号归属，只继承到本机统计，保留原 key 作为备份。
-      const machine = {
-        dailyDate: localStorage.getItem("deliveryDate") || "",
-        dailyCount: Number(localStorage.getItem("dailyDeliveryCount") || "0"),
-        totalCount: Number(localStorage.getItem("totalDeliveryCount") || "0"),
-      };
-      if (!validRecord(machine)) throw new Error("旧投递次数异常，请先备份并检查本机记录");
-      return { version: 1, machine, accounts: {} };
-    },
+  // 按顶层的 | 拆开（括号、方括号里的不拆），这样“hr*|招聘|人事”里的 * 只作用于 hr
+  function splitAlternatives(source) {
+    const parts = [];
+    let depth = 0, inClass = false, start = 0;
+    for (let i = 0; i < source.length; i++) {
+      const ch = source[i];
+      if (ch === "\\") { i++; continue; }
+      if (inClass) { if (ch === "]") inClass = false; continue; }
+      if (ch === "[") inClass = true;
+      else if (ch === "(") depth++;
+      else if (ch === ")") depth--;
+      else if (ch === "|" && depth === 0) { parts.push(source.slice(start, i)); start = i + 1; }
+    }
+    parts.push(source.slice(start));
+    return parts;
+  }
 
-    forToday(record) {
-      const today = new Date().toLocaleDateString();
+  // 每一段：末尾是“字母/数字 + *”时按前缀匹配，否则按整词匹配（允许复数 s）
+  const alternativeSource = (alt) => (/[a-z0-9]\*$/i.test(alt)
+    ? `(?:${alt.slice(0, -1)})`
+    : `(?:${alt})s?${LETTER_EDGE}`);
+
+  function keywordRegex(keyword) {
+    let regex = keywordRegexCache.get(keyword);
+    if (regex) return regex;
+    const build = (source) => new RegExp(`${LETTER_EDGE}(?:${splitAlternatives(source).map(alternativeSource).join("|")})`, "i");
+    const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const valid = (text) => { try { new RegExp(text); return true; } catch (error) { return false; } };
+    try {
+      regex = build(keyword);
+    } catch (error) {
+      // 只把写错的那一段当普通文字，比如“c++|java”里的 c++
+      try {
+        regex = build(splitAlternatives(keyword).map((alt) => (valid(alt) ? alt : escape(alt))).join("|"));
+      } catch (error2) {
+        regex = build(escape(keyword));
+      }
+    }
+    keywordRegexCache.set(keyword, regex);
+    return regex;
+  }
+
+  function matchKeyword(text, keyword) {
+    return keywordRegex(keyword).test(text);
+  }
+
+  // 截取关键词命中处前后的一小段原文，命中部分用「」标出，方便在日志里核对误伤。
+  function keywordSnippet(text, keyword, radius = 10) {
+    const match = keywordRegex(keyword).exec(text);
+    if (!match) return "";
+    const start = Math.max(0, match.index - radius);
+    const end = Math.min(text.length, match.index + match[0].length + radius);
+    const before = text.slice(start, match.index).trimStart();
+    const after = text.slice(match.index + match[0].length, end).trimEnd();
+    return `${start > 0 ? "…" : ""}${before}「${match[0]}」${after}${end < text.length ? "…" : ""}`;
+  }
+
+  const SALARY_DECODE_MAP = {
+    e031: "0", e032: "1", e033: "2", e034: "3", e035: "4",
+    e036: "5", e037: "6", e038: "7", e039: "8", e03a: "9",
+  };
+
+  function decodeSalary(text) {
+    let result = "";
+    for (const ch of text) {
+      const hex = ch.codePointAt(0).toString(16).toLowerCase();
+      result += SALARY_DECODE_MAP[hex] || ch;
+    }
+    return result;
+  }
+
+  function parseSalaryRange(decodedText) {
+    // 按天计薪：xxx-xxx元/天 → 折算为月薪K（按每月工作日常量，向上取整）
+    const perDay = decodedText.match(/(\d+)\s*-\s*(\d+)\s*元\/[天日]/);
+    if (perDay) {
       return {
-        dailyDate: today,
-        dailyCount: record?.dailyDate === today ? record.dailyCount : 0,
-        totalCount: record?.totalCount || 0,
+        min: Math.ceil(parseInt(perDay[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
+        max: Math.ceil(parseInt(perDay[2], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
       };
+    }
+    const perDaySingle = decodedText.match(/(\d+)\s*元\/[天日]/);
+    if (perDaySingle) {
+      const val = Math.ceil(parseInt(perDaySingle[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000);
+      return { min: val, max: val };
+    }
+    // 按月计薪：xx-xxK
+    const cleaned = decodedText.replace(/[Kk].*$/, "K");
+    const match = cleaned.match(/(\d+)\s*-\s*(\d+)\s*[Kk]/);
+    if (match) return { min: parseInt(match[1], 10), max: parseInt(match[2], 10) };
+    const single = cleaned.match(/(\d+)\s*[Kk]/);
+    if (single) return { min: parseInt(single[1], 10), max: parseInt(single[1], 10) };
+    return null;
+  }
+
+  const isNegotiableSalary = (salaryText) => /面议/.test(salaryText);
+
+  // 薪资筛选：sf 为 { type: "none" | "range" | "atLeast" | "atMost", min, max, negotiable }，单位 K。
+  // 区间有重叠就算符合；读不出薪资的不拦截。
+  function salaryInFilter(salaryText, sf) {
+    if (isNegotiableSalary(salaryText)) return sf.negotiable !== false;
+    const min = (sf.type === "range" || sf.type === "atLeast") && sf.min ? parseInt(sf.min, 10) : null;
+    const max = (sf.type === "range" || sf.type === "atMost") && sf.max ? parseInt(sf.max, 10) : null;
+    if (min === null && max === null) return true;
+    const parsed = parseSalaryRange(salaryText);
+    if (!parsed) return true;
+    return (min === null || parsed.max >= min) && (max === null || parsed.min <= max);
+  }
+
+  // 粗筛阶段只能看卡片：只有写明年限且不在范围内才排除，其余留到详情再判断
+  function coarseJobTypeRejectBy(info, jobTypeFilter) {
+    if (!isJobTypeFilterActive(jobTypeFilter)) return null;
+    const result = classifyJob({ title: info.title, tags: info.tags, salary: info.salary });
+    return result.kind === "years" && !jobTypeMatches(result, jobTypeFilter) ? result : null;
+  }
+
+  // 粗筛：返回不收集的原因（reason 为空表示通过）和给人看的说明。预览和实际投递共用这一份判断。
+  // rules 里的字段名和 state 一致：blockedCompanies、coarseBlockedTags、coarseRequiredTags、
+  // includeTags、locationTags、salaryFilter、jobTypeFilter。
+  function explainCoarse(info, contacted, rules) {
+    if (info.jobId && contacted?.has(info.jobId)) return { reason: "contacted", label: "已沟通过" };
+    if (info.headhunter) return { reason: "headhunter", label: "猎头岗位" };
+    const title = info.title.toLowerCase();
+    const company = info.company.toLowerCase();
+    const address = info.address.toLowerCase();
+    let kw = rules.blockedCompanies.find((k) => matchKeyword(company, k));
+    if (kw) return { reason: "company", label: `排除公司"${kw}"` };
+    kw = rules.coarseBlockedTags.find((k) => matchKeyword(title, k));
+    if (kw) return { reason: "blocked", label: `职位名排除"${kw}"` };
+    kw = rules.coarseRequiredTags.find((k) => !matchKeyword(title, k));
+    if (kw) return { reason: "required", label: `缺少必须词"${kw}"` };
+    if (rules.includeTags.length && !rules.includeTags.some((k) => matchKeyword(title, k))) {
+      return { reason: "optional", label: "未命中任一包含词" };
+    }
+    if (rules.locationTags.length && !rules.locationTags.some((k) => matchKeyword(address, k))) {
+      return { reason: "location", label: "工作地不符" };
+    }
+    if (!salaryInFilter(info.salary, rules.salaryFilter)) {
+      return { reason: "salary", label: isNegotiableSalary(info.salary) ? "薪资面议" : "薪资不符" };
+    }
+    const jobType = coarseJobTypeRejectBy(info, rules.jobTypeFilter);
+    if (jobType) return { reason: "jobtype", label: `经验要求"${JOB_YEARS_LABEL[jobType.bucket]}"` };
+    return { reason: "", label: "" };
+  }
+
+  function readCardInfo(card) {
+    return {
+      jobId: ContactedJobs.idOf(card),
+      title: card.querySelector(BOSS.cardTitle)?.textContent?.trim() || "",
+      company: card.querySelector(BOSS.cardCompany)?.textContent?.trim() || "",
+      address: (BOSS.cardAddress.map((selector) => card.querySelector(selector)?.textContent).find(Boolean) || "").trim(),
+      salary: decodeSalary(card.querySelector(BOSS.cardSalary)?.textContent?.trim() || ""),
+      logo: card.querySelector(BOSS.cardLogo)?.src || "",
+      headhunter: (card.querySelector(BOSS.cardBadgeIcon)?.alt || "").includes("猎头"),
+      tags: Array.from(card.querySelectorAll(BOSS.cardTags), (li) => li.textContent.trim()).filter(Boolean),
+    };
+  }
+
+  // 下面这些按当前筛选设置（state）判断，具体规则在 rules/ 里，方便单独测试。
+  const salaryMatches = (salaryText) => salaryInFilter(salaryText, state.salaryFilter);
+  const coarseExplain = (info, contacted) => explainCoarse(info, contacted, state);
+  const coarseRejectReason = (info, contacted) => coarseExplain(info, contacted).reason;
+  const jobTypeFilterActive = () => isJobTypeFilterActive(state.jobTypeFilter);
+  const jobTypeAccepted = (result) => jobTypeMatches(result, state.jobTypeFilter);
+  const coarseJobTypeReject = (info) => coarseJobTypeRejectBy(info, state.jobTypeFilter);
+
+  const hasFilterRules = () => state.includeTags.length || state.coarseBlockedTags.length || state.coarseRequiredTags.length
+    || state.detailOptionalTags.length || state.detailRequiredTags.length || state.detailBlockedTags.length
+    || state.locationTags.length || state.blockedCompanies.length || state.recruiterIncludeTags.length || jobTypeFilterActive();
+
+  // 筛选设置里的实时预览：用当前页已加载的岗位卡片试跑粗筛，不点开岗位、不消耗投递次数。
+  const CoarsePreview = {
+    root: null,
+    summaryEl: null,
+    warnEl: null,
+    detailEl: null,
+    toggleBtn: null,
+    isOpen: false,
+    timer: 0,
+    cardCount: -1,
+
+    create() {
+      const root = document.createElement("div");
+      root.className = "zdl-preview";
+      const head = document.createElement("div");
+      head.className = "zdl-preview-head";
+      this.summaryEl = document.createElement("span");
+      this.summaryEl.className = "zdl-preview-summary";
+      this.summaryEl.setAttribute("aria-live", "polite");
+      this.toggleBtn = document.createElement("button");
+      this.toggleBtn.type = "button";
+      this.toggleBtn.className = "zdl-preview-toggle";
+      this.toggleBtn.setAttribute("aria-expanded", "false");
+      this.toggleBtn.addEventListener("click", () => {
+        this.isOpen = !this.isOpen;
+        this.render();
+      });
+      head.append(this.summaryEl, this.toggleBtn);
+      this.warnEl = document.createElement("div");
+      this.warnEl.className = "zdl-preview-warn";
+      this.detailEl = document.createElement("div");
+      this.detailEl.className = "zdl-preview-detail";
+      root.append(head, this.warnEl, this.detailEl);
+      this.root = root;
+      return root;
     },
 
-    sync() {
-      const id = this.readUid();
-      if (state.account.id && id !== state.account.id) {
-        state.account.needsReload = true;
-        stopProcess();
-      }
-      state.account.id = id;
-      if (!state.account.writeFailed) {
-        try {
-          this.syncAccountSignal(id);
-          const stats = this.readStats();
-          Object.assign(state.delivery, this.forToday(stats.accounts[id]));
-          Object.assign(state.machineDelivery, this.forToday(stats.machine));
-          state.account.error = "";
-        } catch (error) {
-          state.account.error = "无法读取投递记录，请检查本机存储后刷新";
-          stopProcess();
-        }
-      }
-      this.render();
+    schedule() {
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.render(), 60);
+    },
+
+    // 当前页卡片数变化（用户滚动加载、换搜索词）时刷新
+    poll() {
+      if (!this.root || elements.settingsPanel?.hidden) return;
+      const count = document.querySelectorAll(BOSS.jobCard).length;
+      if (count !== this.cardCount) this.render();
+    },
+
+    compute() {
+      const contacted = state.account.id ? ContactedJobs.setFor(state.account.id) : new Set();
+      const rows = Array.from(document.querySelectorAll(BOSS.jobCard)).map((card) => {
+        const info = readCardInfo(card);
+        return { card, info, ...coarseExplain(info, contacted) };
+      });
+      const title = (row) => row.info.title.toLowerCase();
+      // “想要的岗位”：职位名满足你写的必须词和包含词。排除词挡掉这些岗位时视为冲突。
+      const hasPositive = state.includeTags.length > 0 || state.coarseRequiredTags.length > 0;
+      const wanted = (row) => hasPositive
+        && state.coarseRequiredTags.every((k) => matchKeyword(title(row), k))
+        && (!state.includeTags.length || state.includeTags.some((k) => matchKeyword(title(row), k)));
+      const fields = { title, company: (row) => row.info.company.toLowerCase(), address: (row) => row.info.address.toLowerCase() };
+      const tagStats = (tags, field, checkConflict = false) => tags.map((kw) => {
+        const hits = rows.filter((row) => matchKeyword(fields[field](row), kw));
+        const conflicts = checkConflict ? hits.filter(wanted) : [];
+        return { kw, hits: hits.length, conflicts };
+      });
+      return {
+        rows,
+        lists: [
+          { el: elements.coarseRequiredTagList, stats: tagStats(state.coarseRequiredTags, "title"), what: "职位名" },
+          { el: elements.includeTagList, stats: tagStats(state.includeTags, "title"), what: "职位名" },
+          { el: elements.coarseBlockedTagList, stats: tagStats(state.coarseBlockedTags, "title", true), what: "职位名" },
+          { el: elements.locationTagList, stats: tagStats(state.locationTags, "address"), what: "工作地" },
+          { el: elements.blockedCompanyTagList, stats: tagStats(state.blockedCompanies, "company"), what: "公司名" },
+        ],
+      };
     },
 
     render() {
-      const known = !!state.account.id;
-      const daily = state.delivery.dailyCount;
-      const target = state.targetCount;
-      if (elements.kpiValueEl) {
-        const pct = known && target ? Math.min(100, Math.round((daily / target) * 100)) : 0;
-        elements.kpiValueEl.textContent = known ? String(daily) : "–";
-        elements.kpiTargetEl.textContent = `/ ${target} 次`;
-        elements.kpiTotalEl.textContent = known ? `累计 ${state.delivery.totalCount} 次` : "";
-        elements.kpiBarEl.firstElementChild.style.width = `${pct}%`;
-        elements.kpiBarEl.setAttribute("aria-valuenow", String(pct));
-        elements.kpiBarEl.classList.toggle("done", known && daily >= target);
+      if (!this.root) return;
+      clearTimeout(this.timer);
+      const { rows, lists } = this.compute();
+      this.cardCount = rows.length;
+      this._renderTagBadges(rows.length ? lists : []);
+      this.toggleBtn.hidden = !rows.length;
+      this.toggleBtn.textContent = this.isOpen ? "收起明细" : "明细";
+      this.toggleBtn.setAttribute("aria-expanded", String(this.isOpen));
+
+      if (!rows.length) {
+        this.summaryEl.textContent = isJobsPage()
+          ? "当前页还没有岗位，在 BOSS 上搜索或往下滚动加载后，这里会预览筛选结果"
+          : "到「职位」页后，这里会用当前页的岗位预览筛选结果";
+        this.warnEl.replaceChildren();
+        this.detailEl.replaceChildren();
+        return;
       }
-      if (elements.accountsBtn) {
-        elements.accountsBtn.querySelector(".zdl-accounts-label").textContent = known ? `账号 ${this.maskUid(state.account.id)}` : "未识别账号";
-        elements.accountsBtn.title = `本机 · 今日 ${state.machineDelivery.dailyCount} 次 · 累计 ${state.machineDelivery.totalCount} 次（点击查看各账号）`;
+
+      const collected = rows.filter((row) => !row.reason);
+      const contactedCount = rows.filter((row) => row.reason === "contacted").length;
+      this.summaryEl.innerHTML = "";
+      this.summaryEl.append(
+        `当前页 ${rows.length} 个岗位，会收集 `,
+        Object.assign(document.createElement("strong"), { textContent: String(collected.length) }),
+        ` 个${contactedCount ? `（另有 ${contactedCount} 个已沟通过）` : ""}`,
+      );
+
+      // 岗位类型分布（只看卡片和职位名，详情里的信息要打开岗位才知道）
+      const typeCounts = {};
+      rows.forEach((row) => {
+        const result = classifyJob({ title: row.info.title, tags: row.info.tags, salary: row.info.salary });
+        const key = result.kind === "years" ? "社招" : result.kind === "soft" ? JOB_SIGNAL_LABEL[result.types[0]] : "看详情才知道";
+        typeCounts[key] = (typeCounts[key] || 0) + 1;
+      });
+      const order = [...Object.values(JOB_SIGNAL_LABEL), "看详情才知道"];
+      const typeText = "岗位类型（按卡片）：" + order.filter((k) => typeCounts[k]).map((k) => `${k} ${typeCounts[k]}`).join(" · ");
+
+      const conflicts = lists[2].stats.filter((stat) => stat.conflicts.length);
+      const conflictLines = conflicts.map((stat) =>
+        `排除词“${stat.kw}”挡掉了 ${stat.conflicts.length} 个命中包含词的岗位，例如「${stat.conflicts[0].info.title}」`);
+      // 收起时只给一行提示，具体内容放进明细，避免预览区占太多位置
+      this.warnEl.replaceChildren();
+      if (conflicts.length && !this.isOpen) {
+        const warn = document.createElement("button");
+        warn.type = "button";
+        warn.className = "zdl-preview-warn-btn";
+        warn.textContent = `${conflicts.length} 个排除词挡掉了你想要的岗位，点击查看`;
+        warn.title = conflictLines.join("\n");
+        warn.addEventListener("click", () => { this.isOpen = true; this.render(); });
+        this.warnEl.appendChild(warn);
       }
-      if (elements.accountStatusEl) elements.accountStatusEl.textContent = state.account.error
-        || (state.account.needsReload ? "账号已变化，请刷新页面后启动" : !state.account.id ? "请确认已登录 BOSS，等待账号信息加载"
-          : !isJobsPage() && !state.activeRun ? "当前不是职位页，请切换到「职位」页后启动" : "");
-      if (elements.controlBtn) {
-        const label = state.activeRun
-          ? (state.isRunning ? "停止投递" : state.activeRun.started ? "正在停止…" : "准备中…") : "开始投递";
-        if (elements.controlBtn.dataset.label !== label) {
-          elements.controlBtn.dataset.label = label;
-          elements.controlBtn.innerHTML = `${state.activeRun ? UI_ICONS.stop : UI_ICONS.play}<span>${label}</span>`;
-        }
-        elements.controlBtn.disabled = !state.isRunning && (!!state.activeRun || !state.account.id
-          || state.account.needsReload || !!state.account.error || !isJobsPage());
-        elements.controlBtn.classList.toggle("is-running", !!state.activeRun);
-      }
-      if (elements.miniIcon) {
-        const label = state.isRunning ? "海投助手投递中，点击展开" : "展开海投助手";
-        elements.miniIcon.classList.toggle("running", state.isRunning);
-        elements.miniIcon.title = label;
-        elements.miniIcon.setAttribute("aria-label", label);
-      }
-      if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
-      if (elements.configImportBtn) UI._updateConfigControls();
+
+      this.detailEl.hidden = !this.isOpen;
+      if (this.isOpen) this._renderDetail(rows, typeText, conflicts);
     },
 
-    isCurrent(run, allowStopped = false) {
-      if (!run || state.activeRun !== run || state.account.needsReload || state.account.error) return false;
-      if (!isJobsPage()) {
-        if (state.isRunning) Core.log("已离开职位页，投递已停止");
-        stopProcess(run);
-        return false;
-      }
-      try { this.syncAccountSignal(run.uid); } catch (error) { this.sync(); return false; }
-      if (state.account.needsReload) return false;
-      if (this.readUid() !== run.uid) {
-        this.sync();
-        stopProcess(run);
-        return false;
-      }
-      if (state.delivery.dailyDate !== new Date().toLocaleDateString()) this.sync();
-      return !state.account.error && (allowStopped || state.isRunning);
+    _renderTagBadges(lists) {
+      [elements.coarseRequiredTagList, elements.includeTagList, elements.coarseBlockedTagList,
+        elements.locationTagList, elements.blockedCompanyTagList].forEach((el) => {
+        el?.querySelectorAll(".zdl-tag-hit").forEach((badge) => badge.remove());
+        el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.removeAttribute("title"); });
+      });
+      lists.forEach(({ el, stats, what }) => {
+        if (!el) return;
+        el.querySelectorAll(".zdl-tag").forEach((tag) => {
+          const stat = stats[Number(tag.dataset.index)];
+          if (!stat) return;
+          const badge = document.createElement("span");
+          badge.className = "zdl-tag-hit" + (stat.hits ? "" : " zero");
+          badge.textContent = String(stat.hits);
+          tag.insertBefore(badge, tag.querySelector(".zdl-tag-remove"));
+          let tip = `当前页${what}命中 ${stat.hits} 个岗位`;
+          if (stat.conflicts.length) {
+            tag.classList.add("conflict");
+            tip += `；其中 ${stat.conflicts.length} 个也命中包含词，例如：${stat.conflicts.slice(0, 3).map((row) => row.info.title).join("、")}`;
+          }
+          tag.title = tip;
+        });
+      });
     },
 
-    prepare(run) {
-      const stats = this.readStats();
-      if (!stats.accounts[run.uid]) stats.accounts[run.uid] = this.forToday();
-      localStorage.setItem(DELIVERY_STATS_KEY, JSON.stringify(stats));
-      this.sync();
+    // 在页面上定位某个岗位卡片并短暂高亮
+    locate(card) {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.classList.remove("zdl-preview-flash");
+      void card.offsetWidth;
+      card.classList.add("zdl-preview-flash");
+      clearTimeout(card.__zdlFlashTimer);
+      card.__zdlFlashTimer = setTimeout(() => card.classList.remove("zdl-preview-flash"), 1800);
     },
 
-    recordSuccess(run) {
-      if (!this.isCurrent(run, true)) return false;
-      const stats = this.readStats();
-      const account = this.forToday(stats.accounts[run.uid]);
-      const machine = this.forToday(stats.machine);
-      account.dailyCount++; account.totalCount++;
-      machine.dailyCount++; machine.totalCount++;
-      stats.accounts[run.uid] = account;
-      stats.machine = machine;
-      try {
-        // 账号与本机统计在同一条记录内一次写入，避免只更新一方。
-        localStorage.setItem(DELIVERY_STATS_KEY, JSON.stringify(stats));
-      } catch (error) {
-        state.account.writeFailed = true;
-        state.account.error = "本次成功的计数保存失败，已停止；请核对记录";
-        stopProcess(run);
-        throw error;
-      }
-      Object.assign(state.delivery, account);
-      Object.assign(state.machineDelivery, machine);
-      this.render();
-      return true;
+    _renderDetail(rows, typeText, conflicts) {
+      const counts = {};
+      rows.forEach((row) => { if (row.reason) counts[row.label] = (counts[row.label] || 0) + 1; });
+      const reasons = document.createElement("div");
+      reasons.className = "zdl-preview-reasons";
+      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      reasons.textContent = top.length ? `排除原因：${top.map(([label, n]) => `${label} ${n}`).join(" · ")}` : "当前页岗位全部会被收集";
+      const list = document.createElement("div");
+      list.className = "zdl-preview-list";
+      // 会收集的排在前面，其余按原因分组
+      const sorted = [...rows].sort((a, b) => Number(!!a.reason) - Number(!!b.reason) || a.label.localeCompare(b.label));
+      sorted.forEach((row) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "zdl-preview-row";
+        item.title = "在页面上定位这个岗位";
+        const name = document.createElement("span");
+        name.className = "zdl-preview-title";
+        name.textContent = row.info.title || "（无职位名）";
+        const company = document.createElement("span");
+        company.className = "zdl-preview-company";
+        company.textContent = row.info.company;
+        const status = document.createElement("span");
+        status.className = "zdl-preview-status" + (row.reason ? "" : " ok");
+        status.textContent = row.reason ? row.label : "会收集";
+        item.append(name, company, status);
+        item.addEventListener("click", () => this.locate(row.card));
+        list.appendChild(item);
+      });
+      const types = document.createElement("div");
+      types.className = "zdl-preview-types";
+      types.textContent = typeText;
+      const warns = document.createElement("div");
+      warns.className = "zdl-preview-warn-list";
+      // 每条冲突列出被挡掉的岗位，点岗位名即可在页面上定位
+      conflicts.forEach((stat) => {
+        const line = document.createElement("div");
+        line.className = "zdl-preview-warn-item";
+        const text = document.createElement("span");
+        text.textContent = `排除词“${stat.kw}”挡掉了 ${stat.conflicts.length} 个命中包含词的岗位：`;
+        line.appendChild(text);
+        stat.conflicts.slice(0, 5).forEach((row) => {
+          const job = document.createElement("button");
+          job.type = "button";
+          job.className = "zdl-preview-job-link";
+          job.textContent = row.info.title || "（无职位名）";
+          job.title = `${row.info.company} · 点击在页面上定位`;
+          job.addEventListener("click", () => this.locate(row.card));
+          line.appendChild(job);
+        });
+        if (stat.conflicts.length > 5) line.append(` 等 ${stat.conflicts.length} 个`);
+        warns.appendChild(line);
+      });
+      this.detailEl.replaceChildren(...(conflicts.length ? [warns] : []), types, reasons, list);
     },
   };
 
-  const RECRUITER_STATUS_OPTIONS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃", "本周活跃", "本月活跃", "半年前活跃", "未知"];
+  // ---------- 求职向导 ----------
+  // 方向：include 写进“职位名包含任一”；exclusive 的方向没被选中时，signature 写进“职位名排除”。
+  // allows：选中该方向时，不排除这些方向（全栈本身就含前后端，AI 应用常写成“AI后端”）。
+  const WIZARD_DIRECTIONS = [
+    { key: "backend", label: "后端", exclusive: true, include: "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师", signature: "后端|服务端" },
+    { key: "fullstack", label: "全栈", exclusive: false, include: "全栈|full[- ]?stack", allows: ["backend", "frontend"] },
+    { key: "ai", label: "AI应用/Agent", exclusive: false, include: "ai*|agent|智能体|大模型|llm|aigc|rag", allows: ["backend", "fullstack"] },
+    { key: "frontend", label: "前端", exclusive: true, include: "前端|h5|vue|react|小程序", signature: "前端|h5" },
+    { key: "testing", label: "测试", exclusive: true, include: "测试|测开|qa|质量保障", signature: "测试|测开|qa" },
+    { key: "data", label: "数据/大数据", exclusive: true, include: "数据开发|大数据|数仓|etl|数据工程|spark|flink|bi", signature: "大数据|数仓|数据开发|etl" },
+    { key: "algorithm", label: "算法", exclusive: true,
+      include: "算法|机器学习|深度学习|强化学习|多模态|大模型训练|数据挖掘|计算机视觉|自然语言|语音识别|cv|nlp|ocr|slam|推荐|搜索",
+      signature: "算法|机器学习|深度学习|强化学习|cv|nlp|推理优化" },
+    { key: "client", label: "客户端/移动端", exclusive: true, include: "客户端|安卓|android|ios|移动端|鸿蒙|harmonyos|flutter|app开发", signature: "客户端|安卓|android|ios|移动端|鸿蒙|flutter" },
+    { key: "embedded", label: "嵌入式/硬件", exclusive: true, include: "嵌入式|硬件|单片机|驱动|fpga|stm32|plc", signature: "嵌入式|硬件|单片机|fpga|驱动开发" },
+    { key: "ops", label: "运维/DevOps", exclusive: true, include: "运维|devops|sre|k8s|云原生", signature: "运维|devops|sre" },
+    { key: "game", label: "游戏", exclusive: true, include: "游戏|unity|ue[45]|cocos", signature: "游戏|unity|ue[45]" },
+    { key: "security", label: "安全", exclusive: true, include: "安全|渗透|逆向", signature: "安全|渗透|逆向" },
+  ];
+  // 技术栈：title 写进“职位名包含任一”（“Java开发”这类职位名），jd 写进“详情包含任一”
+  const WIZARD_STACKS = [
+    { key: "java", label: "Java", title: "java", jd: "java|spring*|mybatis|微服务" },
+    { key: "python", label: "Python", title: "python", jd: "python|django|flask|fastapi" },
+    { key: "go", label: "Go", title: "golang|go开发|go语言", jd: "golang|go语言|go开发|gin" },
+    { key: "cpp", label: "C/C++", title: "c\\+\\+|cpp", jd: "c\\+\\+|cpp|qt" },
+    { key: "js", label: "JS/TS", title: "javascript|typescript|node*", jd: "javascript|typescript|vue|react|node*" },
+    { key: "php", label: "PHP", title: "php", jd: "php|laravel|thinkphp" },
+    { key: "dl", label: "深度学习框架", title: "pytorch|tensorflow", jd: "pytorch|tensorflow|paddle*|cuda|transformers|深度学习框架" },
+  ];
+  const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
+  const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
+  const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
+  const defaultWizardAnswers = () => ({
+    identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
+    minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
+  });
+
+  // 由向导答案生成配置里向导负责的那几项；其他项（排除公司、工作地、详情排除、今日目标）保持不变
+  function generateWizardConfig(answers) {
+    const a = { ...defaultWizardAnswers(), ...answers };
+    const selected = new Set(a.directions);
+    const allowed = new Set();
+    WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).forEach((d) => (d.allows || []).forEach((k) => allowed.add(k)));
+    const includeTags = [
+      ...WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).map((d) => d.include),
+      ...WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.title),
+    ];
+    const coarseBlockedTags = WIZARD_DIRECTIONS
+      .filter((d) => d.exclusive && !selected.has(d.key) && !allowed.has(d.key))
+      .map((d) => d.signature);
+    if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
+    const types = [...a.identities];
+    if (a.includeOpen) types.push("open");
+    const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
+    const min = String(parseInt(a.minSalary, 10) || "");
+    return {
+      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
+      includeTags,
+      coarseRequiredTags: [],
+      coarseBlockedTags,
+      detailRequiredTags: [],
+      detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
+      salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
+      recruiterIncludeTags: a.onlyHr ? ["hr*|招聘|人事"] : [],
+      recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
+    };
+  }
+
+  function saveTags() {
+    invalidateConfigUndo();
+    UI._refreshFilterCounts();
+    localStorage.setItem("includeTags", JSON.stringify(state.includeTags));
+    localStorage.setItem("locationTags", JSON.stringify(state.locationTags));
+    localStorage.setItem("detailBlockedTags", JSON.stringify(state.detailBlockedTags));
+    localStorage.setItem("detailRequiredTags", JSON.stringify(state.detailRequiredTags));
+    localStorage.setItem("detailOptionalTags", JSON.stringify(state.detailOptionalTags));
+    localStorage.setItem("zdlRecruiterIncludeTags", JSON.stringify(state.recruiterIncludeTags));
+    localStorage.setItem("zdlBlockedCompanies", JSON.stringify(state.blockedCompanies));
+    localStorage.setItem("zdlCoarseBlockedTags", JSON.stringify(state.coarseBlockedTags));
+    localStorage.setItem("zdlCoarseRequiredTags", JSON.stringify(state.coarseRequiredTags));
+  }
+
+  const CONFIG_TAG_STORAGE_KEYS = {
+    includeTags: "includeTags",
+    locationTags: "locationTags",
+    detailBlockedTags: "detailBlockedTags",
+    detailRequiredTags: "detailRequiredTags",
+    detailOptionalTags: "detailOptionalTags",
+    recruiterIncludeTags: "zdlRecruiterIncludeTags",
+    blockedCompanies: "zdlBlockedCompanies",
+    coarseBlockedTags: "zdlCoarseBlockedTags",
+    coarseRequiredTags: "zdlCoarseRequiredTags",
+  };
+
+  const CONFIG_UNDO_KEY = "zdlConfigUndoV1";
+  const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter"];
+  const CONFIG_FIELD_LABELS = {
+    targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型",
+    includeTags: "职位名 · 包含任一", coarseRequiredTags: "职位名 · 必须包含", coarseBlockedTags: "职位名 · 排除",
+    locationTags: "工作地", blockedCompanies: "排除公司",
+    detailBlockedTags: "详情 · 排除", detailRequiredTags: "详情 · 必须包含", detailOptionalTags: "详情 · 包含任一",
+    recruiterIncludeTags: "只投招聘者",
+  };
+
+  let configExternalChanged = false;
+  // 其他标签页改了配置时由 storage 事件调用；之后本页不再写配置，避免覆盖。
+  function markConfigExternalChanged() {
+    configExternalChanged = true;
+  }
+  let configUndoInvalidated = false;
+
+  function getCurrentConfig() {
+    const config = {
+      targetCount: state.targetCount,
+      salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max, negotiable: state.salaryFilter.negotiable !== false },
+      recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
+      jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years] },
+    };
+    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
+    return config;
+  }
+
+  function exportConfig() {
+    return JSON.stringify({ type: "zdl-boss-config", version: 1, config: getCurrentConfig() }, null, 2);
+  }
+
+  function parseConfig(jsonText) {
+    let text = String(jsonText).trim();
+    const fenced = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
+    if (fenced) text = fenced[1].trim();
+    let data;
+    try { data = JSON.parse(text); }
+    catch (error) { throw new Error("配置文本格式不正确，请重新完整复制。"); }
+    const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+    if (!isObject(data) || data.type !== "zdl-boss-config" || data.version !== 1 || !isObject(data.config)) {
+      throw new Error("不是支持的配置，请使用“复制配置”生成的内容。");
+    }
+    const config = data.config;
+    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => {
+      if (config[key] === undefined) config[key] = [];
+      if (!Array.isArray(config[key]) || !config[key].every((tag) => typeof tag === "string" && tag.trim())) {
+        throw new Error(`${CONFIG_FIELD_LABELS[key]}格式不正确，每个词都必须是非空文本。`);
+      }
+    });
+    if (!Number.isInteger(config.targetCount) || config.targetCount < 1 || config.targetCount > CONFIG.DAILY_LIMIT) {
+      throw new Error(`投递目标必须是 1 到 ${CONFIG.DAILY_LIMIT} 之间的整数。`);
+    }
+    const salary = config.salaryFilter;
+    const validSalaryValue = (value) => typeof value === "string"
+      && (value === "" || (value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0));
+    if (!isObject(salary) || !["none", "range", "atLeast", "atMost"].includes(salary.type)
+      || !validSalaryValue(salary.min) || !validSalaryValue(salary.max)
+      || (salary.negotiable !== undefined && typeof salary.negotiable !== "boolean")) {
+      throw new Error("薪资配置无效，请检查薪资类型和上下限。");
+    }
+    const jobType = config.jobTypeFilter;
+    const validKeys = (list, all, legacy = {}) => Array.isArray(list) && list.every((k) => legacy[k] || all.some(([key]) => key === k));
+    if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES, LEGACY_JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS))) {
+      throw new Error("岗位类型配置无效。");
+    }
+    const activityOptions = RECRUITER_STATUS_OPTIONS;
+    if (!Array.isArray(config.recruiterActivityStatus)
+      || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
+      throw new Error("招聘者活跃状态配置无效。");
+    }
+    // 薪资类型由上下限推出来（旧配置里“范围 + 最高留空”和“至少”是同一个意思）
+    const salaryMin = salary.type === "none" || salary.type === "atMost" ? "" : salary.min.trim();
+    const salaryMax = salary.type === "none" || salary.type === "atLeast" ? "" : salary.max.trim();
+    const salaryType = salaryMin && salaryMax ? "range" : salaryMin ? "atLeast" : salaryMax ? "atMost" : "none";
+    const normalized = {
+      targetCount: config.targetCount,
+      salaryFilter: { type: salaryType, min: salaryMin, max: salaryMax, negotiable: salary.negotiable !== false },
+      recruiterActivityStatus: [...config.recruiterActivityStatus],
+      jobTypeFilter: normalizeJobTypeFilter(jobType),
+    };
+    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { normalized[key] = [...config[key]]; });
+    return normalized;
+  }
+
+  function formatConfigValue(key, value) {
+    if (key === "targetCount") return `${value} 次`;
+    if (key === "salaryFilter") {
+      const range = value.type === "atLeast" && value.min ? `${value.min}K 以上`
+        : value.type === "atMost" && value.max ? `${value.max}K 以下`
+        : value.type === "range" && (value.min || value.max) ? `${value.min || "不限"} ~ ${value.max || "不限"}K` : "不限";
+      return `${range}，${value.negotiable === false ? "不含" : "含"}面议`;
+    }
+    if (key === "jobTypeFilter") {
+      const types = value.types.length === JOB_TYPES.length ? "全部类型" : value.types.map((k) => JOB_TYPE_LABEL[k]).join("、") || "不投任何类型";
+      const years = value.types.includes("social") && value.years.length < JOB_YEARS.length
+        ? `；社招 ${value.years.map((k) => JOB_YEARS_LABEL[k]).join("、") || "不投"}` : "";
+      return types + years;
+    }
+    if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
+    return value.join("、");
+  }
+
+  function getConfigChanges(config) {
+    const current = getCurrentConfig();
+    return Object.keys(current).filter((key) => JSON.stringify(current[key]) !== JSON.stringify(config[key]))
+      .map((key) => ({ key, label: CONFIG_FIELD_LABELS[key], before: formatConfigValue(key, current[key]), after: formatConfigValue(key, config[key]) }));
+  }
+
+  function getConfigStorageValues(config) {
+    const values = {};
+    Object.entries(CONFIG_TAG_STORAGE_KEYS).forEach(([key, storageKey]) => { values[storageKey] = JSON.stringify(config[key]); });
+    values.zdlTargetCount = String(config.targetCount);
+    values.salaryFilter = JSON.stringify(config.salaryFilter);
+    values.recruiterActivityStatus = JSON.stringify(config.recruiterActivityStatus);
+    values.zdlJobTypeFilter = JSON.stringify(config.jobTypeFilter);
+    return values;
+  }
+
+  function assertConfigIdle() {
+    if (state.isRunning || state.activeRun) throw new Error("请先停止海投，等待任务结束后再导入或撤销。");
+    if (configExternalChanged) throw new Error("其他页面已修改配置，请刷新后重试。");
+  }
+
+  function writeConfig(config, undoValue) {
+    const values = { ...getConfigStorageValues(config), [CONFIG_UNDO_KEY]: undoValue };
+    const previous = Object.keys(values).map((key) => [key, localStorage.getItem(key)]);
+    try {
+      Object.entries(values).forEach(([key, value]) => {
+        if (value === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, value);
+      });
+    } catch (error) {
+      let rollbackFailed = false;
+      previous.forEach(([key, value]) => {
+        try {
+          if (localStorage.getItem(key) === value) return;
+          if (value === null) localStorage.removeItem(key);
+          else localStorage.setItem(key, value);
+        } catch (rollbackError) { rollbackFailed = true; }
+      });
+      throw new Error(rollbackFailed
+        ? "本地存储写入及恢复失败，请检查浏览器存储权限和剩余空间。"
+        : "本地存储写入失败，已保留原配置，请检查浏览器存储权限和剩余空间。");
+    }
+    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => {
+      state[key].splice(0);
+      config[key].forEach((tag) => state[key].push(tag));
+    });
+    state.targetCount = config.targetCount;
+    Object.assign(state.salaryFilter, config.salaryFilter);
+    state.settings.recruiterActivityStatus.splice(0);
+    config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
+    state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);
+  }
+
+  function importConfig(jsonText) {
+    assertConfigIdle();
+    const config = parseConfig(jsonText);
+    const changes = getConfigChanges(config);
+    if (!changes.length) return 0;
+    const undo = JSON.stringify({ version: 1, before: getCurrentConfig(), after: config });
+    writeConfig(config, undo);
+    configUndoInvalidated = false;
+    return changes.length;
+  }
+
+  function getConfigUndo() {
+    if (configExternalChanged || configUndoInvalidated) return null;
+    try {
+      const data = JSON.parse(localStorage.getItem(CONFIG_UNDO_KEY) || "null");
+      if (!data || data.version !== 1) return null;
+      const wrap = (config) => JSON.stringify({ type: "zdl-boss-config", version: 1, config });
+      const before = parseConfig(wrap(data.before)), after = parseConfig(wrap(data.after));
+      if (JSON.stringify(getCurrentConfig()) !== JSON.stringify(after)) return null;
+      if (Object.entries(getConfigStorageValues(after)).some(([key, value]) => localStorage.getItem(key) !== value)) return null;
+      return { before, after };
+    } catch (error) { return null; }
+  }
+
+  function canUndoConfigImport() {
+    return !state.isRunning && !state.activeRun && !!getConfigUndo();
+  }
+
+  function undoConfigImport() {
+    assertConfigIdle();
+    const undo = getConfigUndo();
+    if (!undo) throw new Error("配置已修改，或没有可撤销的导入。");
+    writeConfig(undo.before, null);
+  }
+
+  function invalidateConfigUndo() {
+    configUndoInvalidated = true;
+    try { localStorage.removeItem(CONFIG_UNDO_KEY); } catch (error) {}
+    if (elements.configImportBtn) {
+      elements.configFallback.hidden = true;
+      UI._setConfigStatus("");
+      UI._updateConfigControls();
+    }
+  }
+
   const collapseInstances = [];
   const TUTORIAL_SEEN_KEY = "zdlTutorialSeen";
   let tutorialShownInPage = false;
@@ -2469,362 +3210,6 @@
 
   };
 
-  function cleanDesc(descElement) {
-    if (!descElement) return "";
-    // BOSS 会在描述里插入隐藏的干扰文字（如“现场<span>kanzhun</span>面试”），
-    // 它们的隐藏样式写在描述内嵌的 <style> 里。先按样式找出这些元素整个删掉，再去掉 style 本身。
-    const clone = descElement.cloneNode(true);
-    const hiddenClasses = new Set();
-    clone.querySelectorAll("style").forEach((style) => {
-      const rules = style.textContent.match(/\.[\w-]+\s*\{[^}]*\}/g) || [];
-      rules.forEach((rule) => {
-        if (/display\s*:\s*none|visibility\s*:\s*hidden|width\s*:\s*0\.\d+px|font-size\s*:\s*0(?![.\d])/i.test(rule)) {
-          hiddenClasses.add(rule.slice(1, rule.indexOf("{")).trim());
-        }
-      });
-      style.remove();
-    });
-    clone.querySelectorAll("[class]").forEach((el) => {
-      if ([...el.classList].some((cls) => hiddenClasses.has(cls))) el.remove();
-    });
-    clone.querySelectorAll("[style]").forEach((el) => {
-      if (/display\s*:\s*none|visibility\s*:\s*hidden/i.test(el.getAttribute("style"))) el.remove();
-    });
-    let text = clone.textContent;
-    // 兜底：样式规则变了时，仍去掉常见的干扰词（大小写不敏感），长模式优先
-    text = text.replace(/来自\s*boss\s*直聘/gi, "");
-    text = text.replace(/来自\s*boss/gi, "");
-    text = text.replace(/boss\s*直聘/gi, "");
-    text = text.replace(/\bboss\b|kanzhun/gi, "");
-    text = text.replace(/直聘/g, "");
-    // 去除换行、回车、制表符，压缩连续空白
-    text = text.replace(/[\n\r\t]/g, " ").replace(/\s+/g, " ").trim();
-    return text;
-  }
-
-  const SALARY_DECODE_MAP = {
-    e031: "0", e032: "1", e033: "2", e034: "3", e035: "4",
-    e036: "5", e037: "6", e038: "7", e039: "8", e03a: "9",
-  };
-
-  function decodeSalary(text) {
-    let result = "";
-    for (const ch of text) {
-      const hex = ch.codePointAt(0).toString(16).toLowerCase();
-      result += SALARY_DECODE_MAP[hex] || ch;
-    }
-    return result;
-  }
-
-  function parseSalaryRange(decodedText) {
-    // 按天计薪：xxx-xxx元/天 → 折算为月薪K（按每月工作日常量，向上取整）
-    const perDay = decodedText.match(/(\d+)\s*-\s*(\d+)\s*元\/[天日]/);
-    if (perDay) {
-      return {
-        min: Math.ceil(parseInt(perDay[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
-        max: Math.ceil(parseInt(perDay[2], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
-      };
-    }
-    const perDaySingle = decodedText.match(/(\d+)\s*元\/[天日]/);
-    if (perDaySingle) {
-      const val = Math.ceil(parseInt(perDaySingle[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000);
-      return { min: val, max: val };
-    }
-    // 按月计薪：xx-xxK
-    const cleaned = decodedText.replace(/[Kk].*$/, "K");
-    const match = cleaned.match(/(\d+)\s*-\s*(\d+)\s*[Kk]/);
-    if (match) return { min: parseInt(match[1], 10), max: parseInt(match[2], 10) };
-    const single = cleaned.match(/(\d+)\s*[Kk]/);
-    if (single) return { min: parseInt(single[1], 10), max: parseInt(single[1], 10) };
-    return null;
-  }
-
-  // 英文按整词匹配：关键词边缘是字母时，紧挨着的字符不能也是字母（java 不匹配 javascript），
-  // 中文不受影响。允许复数 s（agent 匹配 agents）；末尾加 * 表示前缀（spring* 匹配 springboot）。
-  // 关键词支持正则，不是合法正则时按普通文字匹配（如 c++）。
-  const LETTER_EDGE = "(?:(?<![a-z])|(?![a-z]))";
-  const keywordRegexCache = new Map();
-
-  // 按顶层的 | 拆开（括号、方括号里的不拆），这样“hr*|招聘|人事”里的 * 只作用于 hr
-  function splitAlternatives(source) {
-    const parts = [];
-    let depth = 0, inClass = false, start = 0;
-    for (let i = 0; i < source.length; i++) {
-      const ch = source[i];
-      if (ch === "\\") { i++; continue; }
-      if (inClass) { if (ch === "]") inClass = false; continue; }
-      if (ch === "[") inClass = true;
-      else if (ch === "(") depth++;
-      else if (ch === ")") depth--;
-      else if (ch === "|" && depth === 0) { parts.push(source.slice(start, i)); start = i + 1; }
-    }
-    parts.push(source.slice(start));
-    return parts;
-  }
-
-  // 每一段：末尾是“字母/数字 + *”时按前缀匹配，否则按整词匹配（允许复数 s）
-  const alternativeSource = (alt) => (/[a-z0-9]\*$/i.test(alt)
-    ? `(?:${alt.slice(0, -1)})`
-    : `(?:${alt})s?${LETTER_EDGE}`);
-
-  function keywordRegex(keyword) {
-    let regex = keywordRegexCache.get(keyword);
-    if (regex) return regex;
-    const build = (source) => new RegExp(`${LETTER_EDGE}(?:${splitAlternatives(source).map(alternativeSource).join("|")})`, "i");
-    const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const valid = (text) => { try { new RegExp(text); return true; } catch (error) { return false; } };
-    try {
-      regex = build(keyword);
-    } catch (error) {
-      // 只把写错的那一段当普通文字，比如“c++|java”里的 c++
-      try {
-        regex = build(splitAlternatives(keyword).map((alt) => (valid(alt) ? alt : escape(alt))).join("|"));
-      } catch (error2) {
-        regex = build(escape(keyword));
-      }
-    }
-    keywordRegexCache.set(keyword, regex);
-    return regex;
-  }
-
-  function matchKeyword(text, keyword) {
-    return keywordRegex(keyword).test(text);
-  }
-
-  function saveTags() {
-    invalidateConfigUndo();
-    UI._refreshFilterCounts();
-    localStorage.setItem("includeTags", JSON.stringify(state.includeTags));
-    localStorage.setItem("locationTags", JSON.stringify(state.locationTags));
-    localStorage.setItem("detailBlockedTags", JSON.stringify(state.detailBlockedTags));
-    localStorage.setItem("detailRequiredTags", JSON.stringify(state.detailRequiredTags));
-    localStorage.setItem("detailOptionalTags", JSON.stringify(state.detailOptionalTags));
-    localStorage.setItem("zdlRecruiterIncludeTags", JSON.stringify(state.recruiterIncludeTags));
-    localStorage.setItem("zdlBlockedCompanies", JSON.stringify(state.blockedCompanies));
-    localStorage.setItem("zdlCoarseBlockedTags", JSON.stringify(state.coarseBlockedTags));
-    localStorage.setItem("zdlCoarseRequiredTags", JSON.stringify(state.coarseRequiredTags));
-  }
-
-  const CONFIG_TAG_STORAGE_KEYS = {
-    includeTags: "includeTags",
-    locationTags: "locationTags",
-    detailBlockedTags: "detailBlockedTags",
-    detailRequiredTags: "detailRequiredTags",
-    detailOptionalTags: "detailOptionalTags",
-    recruiterIncludeTags: "zdlRecruiterIncludeTags",
-    blockedCompanies: "zdlBlockedCompanies",
-    coarseBlockedTags: "zdlCoarseBlockedTags",
-    coarseRequiredTags: "zdlCoarseRequiredTags",
-  };
-
-  const CONFIG_UNDO_KEY = "zdlConfigUndoV1";
-  const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter"];
-  const CONFIG_FIELD_LABELS = {
-    targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型",
-    includeTags: "职位名 · 包含任一", coarseRequiredTags: "职位名 · 必须包含", coarseBlockedTags: "职位名 · 排除",
-    locationTags: "工作地", blockedCompanies: "排除公司",
-    detailBlockedTags: "详情 · 排除", detailRequiredTags: "详情 · 必须包含", detailOptionalTags: "详情 · 包含任一",
-    recruiterIncludeTags: "只投招聘者",
-  };
-
-  let configExternalChanged = false;
-  let configUndoInvalidated = false;
-
-  function getCurrentConfig() {
-    const config = {
-      targetCount: state.targetCount,
-      salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max, negotiable: state.salaryFilter.negotiable !== false },
-      recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
-      jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years] },
-    };
-    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
-    return config;
-  }
-
-  function exportConfig() {
-    return JSON.stringify({ type: "zdl-boss-config", version: 1, config: getCurrentConfig() }, null, 2);
-  }
-
-  function parseConfig(jsonText) {
-    let text = String(jsonText).trim();
-    const fenced = text.match(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i);
-    if (fenced) text = fenced[1].trim();
-    let data;
-    try { data = JSON.parse(text); }
-    catch (error) { throw new Error("配置文本格式不正确，请重新完整复制。"); }
-    const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-    if (!isObject(data) || data.type !== "zdl-boss-config" || data.version !== 1 || !isObject(data.config)) {
-      throw new Error("不是支持的配置，请使用“复制配置”生成的内容。");
-    }
-    const config = data.config;
-    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => {
-      if (config[key] === undefined) config[key] = [];
-      if (!Array.isArray(config[key]) || !config[key].every((tag) => typeof tag === "string" && tag.trim())) {
-        throw new Error(`${CONFIG_FIELD_LABELS[key]}格式不正确，每个词都必须是非空文本。`);
-      }
-    });
-    if (!Number.isInteger(config.targetCount) || config.targetCount < 1 || config.targetCount > CONFIG.DAILY_LIMIT) {
-      throw new Error(`投递目标必须是 1 到 ${CONFIG.DAILY_LIMIT} 之间的整数。`);
-    }
-    const salary = config.salaryFilter;
-    const validSalaryValue = (value) => typeof value === "string"
-      && (value === "" || (value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0));
-    if (!isObject(salary) || !["none", "range", "atLeast", "atMost"].includes(salary.type)
-      || !validSalaryValue(salary.min) || !validSalaryValue(salary.max)
-      || (salary.negotiable !== undefined && typeof salary.negotiable !== "boolean")) {
-      throw new Error("薪资配置无效，请检查薪资类型和上下限。");
-    }
-    const jobType = config.jobTypeFilter;
-    const validKeys = (list, all, legacy = {}) => Array.isArray(list) && list.every((k) => legacy[k] || all.some(([key]) => key === k));
-    if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES, LEGACY_JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS))) {
-      throw new Error("岗位类型配置无效。");
-    }
-    const activityOptions = RECRUITER_STATUS_OPTIONS;
-    if (!Array.isArray(config.recruiterActivityStatus)
-      || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
-      throw new Error("招聘者活跃状态配置无效。");
-    }
-    // 薪资类型由上下限推出来（旧配置里“范围 + 最高留空”和“至少”是同一个意思）
-    const salaryMin = salary.type === "none" || salary.type === "atMost" ? "" : salary.min.trim();
-    const salaryMax = salary.type === "none" || salary.type === "atLeast" ? "" : salary.max.trim();
-    const salaryType = salaryMin && salaryMax ? "range" : salaryMin ? "atLeast" : salaryMax ? "atMost" : "none";
-    const normalized = {
-      targetCount: config.targetCount,
-      salaryFilter: { type: salaryType, min: salaryMin, max: salaryMax, negotiable: salary.negotiable !== false },
-      recruiterActivityStatus: [...config.recruiterActivityStatus],
-      jobTypeFilter: normalizeJobTypeFilter(jobType),
-    };
-    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { normalized[key] = [...config[key]]; });
-    return normalized;
-  }
-
-  function formatConfigValue(key, value) {
-    if (key === "targetCount") return `${value} 次`;
-    if (key === "salaryFilter") {
-      const range = value.type === "atLeast" && value.min ? `${value.min}K 以上`
-        : value.type === "atMost" && value.max ? `${value.max}K 以下`
-        : value.type === "range" && (value.min || value.max) ? `${value.min || "不限"} ~ ${value.max || "不限"}K` : "不限";
-      return `${range}，${value.negotiable === false ? "不含" : "含"}面议`;
-    }
-    if (key === "jobTypeFilter") {
-      const types = value.types.length === JOB_TYPES.length ? "全部类型" : value.types.map((k) => JOB_TYPE_LABEL[k]).join("、") || "不投任何类型";
-      const years = value.types.includes("social") && value.years.length < JOB_YEARS.length
-        ? `；社招 ${value.years.map((k) => JOB_YEARS_LABEL[k]).join("、") || "不投"}` : "";
-      return types + years;
-    }
-    if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
-    return value.join("、");
-  }
-
-  function getConfigChanges(config) {
-    const current = getCurrentConfig();
-    return Object.keys(current).filter((key) => JSON.stringify(current[key]) !== JSON.stringify(config[key]))
-      .map((key) => ({ key, label: CONFIG_FIELD_LABELS[key], before: formatConfigValue(key, current[key]), after: formatConfigValue(key, config[key]) }));
-  }
-
-  function getConfigStorageValues(config) {
-    const values = {};
-    Object.entries(CONFIG_TAG_STORAGE_KEYS).forEach(([key, storageKey]) => { values[storageKey] = JSON.stringify(config[key]); });
-    values.zdlTargetCount = String(config.targetCount);
-    values.salaryFilter = JSON.stringify(config.salaryFilter);
-    values.recruiterActivityStatus = JSON.stringify(config.recruiterActivityStatus);
-    values.zdlJobTypeFilter = JSON.stringify(config.jobTypeFilter);
-    return values;
-  }
-
-  function assertConfigIdle() {
-    if (state.isRunning || state.activeRun) throw new Error("请先停止海投，等待任务结束后再导入或撤销。");
-    if (configExternalChanged) throw new Error("其他页面已修改配置，请刷新后重试。");
-  }
-
-  function writeConfig(config, undoValue) {
-    const values = { ...getConfigStorageValues(config), [CONFIG_UNDO_KEY]: undoValue };
-    const previous = Object.keys(values).map((key) => [key, localStorage.getItem(key)]);
-    try {
-      Object.entries(values).forEach(([key, value]) => {
-        if (value === null) localStorage.removeItem(key);
-        else localStorage.setItem(key, value);
-      });
-    } catch (error) {
-      let rollbackFailed = false;
-      previous.forEach(([key, value]) => {
-        try {
-          if (localStorage.getItem(key) === value) return;
-          if (value === null) localStorage.removeItem(key);
-          else localStorage.setItem(key, value);
-        } catch (rollbackError) { rollbackFailed = true; }
-      });
-      throw new Error(rollbackFailed
-        ? "本地存储写入及恢复失败，请检查浏览器存储权限和剩余空间。"
-        : "本地存储写入失败，已保留原配置，请检查浏览器存储权限和剩余空间。");
-    }
-    Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => {
-      state[key].splice(0);
-      config[key].forEach((tag) => state[key].push(tag));
-    });
-    state.targetCount = config.targetCount;
-    Object.assign(state.salaryFilter, config.salaryFilter);
-    state.settings.recruiterActivityStatus.splice(0);
-    config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
-    state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);
-  }
-
-  function importConfig(jsonText) {
-    assertConfigIdle();
-    const config = parseConfig(jsonText);
-    const changes = getConfigChanges(config);
-    if (!changes.length) return 0;
-    const undo = JSON.stringify({ version: 1, before: getCurrentConfig(), after: config });
-    writeConfig(config, undo);
-    configUndoInvalidated = false;
-    return changes.length;
-  }
-
-  function getConfigUndo() {
-    if (configExternalChanged || configUndoInvalidated) return null;
-    try {
-      const data = JSON.parse(localStorage.getItem(CONFIG_UNDO_KEY) || "null");
-      if (!data || data.version !== 1) return null;
-      const wrap = (config) => JSON.stringify({ type: "zdl-boss-config", version: 1, config });
-      const before = parseConfig(wrap(data.before)), after = parseConfig(wrap(data.after));
-      if (JSON.stringify(getCurrentConfig()) !== JSON.stringify(after)) return null;
-      if (Object.entries(getConfigStorageValues(after)).some(([key, value]) => localStorage.getItem(key) !== value)) return null;
-      return { before, after };
-    } catch (error) { return null; }
-  }
-
-  function canUndoConfigImport() {
-    return !state.isRunning && !state.activeRun && !!getConfigUndo();
-  }
-
-  function undoConfigImport() {
-    assertConfigIdle();
-    const undo = getConfigUndo();
-    if (!undo) throw new Error("配置已修改，或没有可撤销的导入。");
-    writeConfig(undo.before, null);
-  }
-
-  function invalidateConfigUndo() {
-    configUndoInvalidated = true;
-    try { localStorage.removeItem(CONFIG_UNDO_KEY); } catch (error) {}
-    if (elements.configImportBtn) {
-      elements.configFallback.hidden = true;
-      UI._setConfigStatus("");
-      UI._updateConfigControls();
-    }
-  }
-
-  function saveLogEntries() {
-    try {
-      if (state.logEntries.length > CONFIG.MAX_LOG_ENTRIES) {
-        state.logEntries.splice(0, state.logEntries.length - CONFIG.MAX_LOG_ENTRIES);
-      }
-      localStorage.setItem("zdlLogEntries", JSON.stringify(state.logEntries));
-    } catch (e) {
-      // localStorage 写入失败（存储满 / 无痕模式等），静默忽略
-    }
-  }
-
   function renderTagList(container, tags, tagType = "", editIndex) {
     container.innerHTML = "";
     tags.forEach((tag, i) => {
@@ -2859,7 +3244,6 @@
     return el;
   }
 
-
   function toggleStatusOption(value, chip) {
     const idx = state.settings.recruiterActivityStatus.indexOf(value);
     if (idx >= 0) state.settings.recruiterActivityStatus.splice(idx, 1);
@@ -2885,582 +3269,289 @@
     }, type === "success" ? 2200 : 3500);
   }
 
-  // 记录各账号已沟通过的岗位 id，下次直接在粗筛阶段跳过，不再逐个点开。
-  const CONTACTED_JOBS_KEY = "zdlContactedJobsV1";
-  const CONTACTED_JOBS_LIMIT = 3000;
-  const ContactedJobs = {
-    idOf(card) {
-      const href = card.querySelector("a[href*='job_detail']")?.getAttribute("href") || "";
-      return href.match(/job_detail\/([^./?#]+)/)?.[1] || "";
+  const DELIVERY_STATS_KEY = "zdlDeliveryStatsV1";
+  const CURRENT_ACCOUNT_KEY = "zdlAccountPageV1:";
+  const DELIVERY_LOCK_NAME = "zdl-boss-delivery";
+  const Delivery = {
+    normalizeUid(value) {
+      const id = String(value ?? "");
+      return /^[1-9]\d*$/.test(id) ? id : "";
     },
 
-    _read() {
-      try {
-        const data = JSON.parse(localStorage.getItem(CONTACTED_JOBS_KEY) || "{}");
-        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
-      } catch (error) {
-        return {};
+    maskUid(value) {
+      const id = this.normalizeUid(value);
+      if (!id) return "未知账号";
+      return id.length <= 4 ? "*".repeat(id.length)
+        : id.slice(0, 2) + "*".repeat(id.length - 4) + id.slice(-2);
+    },
+
+    inlineUid(text) {
+      const assignment = /(?:^|[;\n])\s*(?:(?:var|let|const)\s+)?(?:window\.)?_PAGE\s*=\s*\{/.exec(text);
+      if (!assignment) return "";
+      let depth = 1, quote = "", escaped = false, fieldStart = true;
+      const start = assignment.index + assignment[0].length;
+      for (let i = start; i < text.length && depth; i++) {
+        const char = text[i];
+        if (quote) {
+          if (escaped) escaped = false;
+          else if (char === "\\") escaped = true;
+          else if (char === quote) quote = "";
+          continue;
+        }
+        if (char === "/" && text[i + 1] === "/") {
+          const end = text.indexOf("\n", i + 2);
+          i = end < 0 ? text.length : end;
+          continue;
+        }
+        if (char === "/" && text[i + 1] === "*") {
+          const end = text.indexOf("*/", i + 2);
+          if (end < 0) return "";
+          i = end + 1;
+          continue;
+        }
+        if (depth === 1 && fieldStart) {
+          const match = text.slice(i).match(/^\s*(?:uid|"uid"|'uid')\s*:\s*(?:"([1-9]\d*)"|'([1-9]\d*)'|([1-9]\d*))\s*(?=[,}])/);
+          if (match) return match[1] || match[2] || match[3];
+          if (!/\s/.test(char)) fieldStart = false;
+        }
+        if (char === '"' || char === "'" || char === "`") quote = char;
+        else if (char === "{" || char === "[") depth++;
+        else if (char === "}" || char === "]") depth--;
+        if (char === "," && depth === 1) fieldStart = true;
       }
+      return "";
     },
 
-    setFor(uid) {
-      const ids = this._read()[uid];
-      return new Set(Array.isArray(ids) ? ids : []);
-    },
-
-    add(uid, jobId) {
-      if (!uid || !jobId) return;
-      const data = this._read();
-      const ids = Array.isArray(data[uid]) ? data[uid] : [];
-      if (ids.includes(jobId)) return;
-      ids.push(jobId);
-      data[uid] = ids.slice(-CONTACTED_JOBS_LIMIT);
-      try { localStorage.setItem(CONTACTED_JOBS_KEY, JSON.stringify(data)); } catch (error) {}
-    },
-  };
-
-  function readCardInfo(card) {
-    return {
-      jobId: ContactedJobs.idOf(card),
-      title: card.querySelector(".job-name")?.textContent?.trim() || "",
-      company: card.querySelector(".boss-name")?.textContent?.trim() || "",
-      address: (card.querySelector(".job-address-desc")?.textContent
-        || card.querySelector(".company-location")?.textContent
-        || card.querySelector(".job-area")?.textContent || "").trim(),
-      salary: decodeSalary(card.querySelector(".job-salary")?.textContent?.trim() || ""),
-      logo: card.querySelector(".boss-logo img")?.src || "",
-      headhunter: (card.querySelector(".job-tag-icon")?.alt || "").includes("猎头"),
-      tags: Array.from(card.querySelectorAll(".tag-list li"), (li) => li.textContent.trim()).filter(Boolean),
-    };
-  }
-
-  const isNegotiableSalary = (salaryText) => /面议/.test(salaryText);
-
-  function salaryMatches(salaryText) {
-    const sf = state.salaryFilter;
-    if (isNegotiableSalary(salaryText)) return sf.negotiable !== false;
-    const min = (sf.type === "range" || sf.type === "atLeast") && sf.min ? parseInt(sf.min, 10) : null;
-    const max = (sf.type === "range" || sf.type === "atMost") && sf.max ? parseInt(sf.max, 10) : null;
-    if (min === null && max === null) return true;
-    const parsed = parseSalaryRange(salaryText);
-    if (!parsed) return true;
-    return (min === null || parsed.max >= min) && (max === null || parsed.min <= max);
-  }
-
-  // 粗筛：返回不收集的原因（reason 为空表示通过）和给人看的说明。预览和实际投递共用这一份判断。
-  function coarseExplain(info, contacted) {
-    if (info.jobId && contacted?.has(info.jobId)) return { reason: "contacted", label: "已沟通过" };
-    if (info.headhunter) return { reason: "headhunter", label: "猎头岗位" };
-    const title = info.title.toLowerCase();
-    const company = info.company.toLowerCase();
-    const address = info.address.toLowerCase();
-    let kw = state.blockedCompanies.find((k) => matchKeyword(company, k));
-    if (kw) return { reason: "company", label: `排除公司"${kw}"` };
-    kw = state.coarseBlockedTags.find((k) => matchKeyword(title, k));
-    if (kw) return { reason: "blocked", label: `职位名排除"${kw}"` };
-    kw = state.coarseRequiredTags.find((k) => !matchKeyword(title, k));
-    if (kw) return { reason: "required", label: `缺少必须词"${kw}"` };
-    if (state.includeTags.length && !state.includeTags.some((k) => matchKeyword(title, k))) {
-      return { reason: "optional", label: "未命中任一包含词" };
-    }
-    if (state.locationTags.length && !state.locationTags.some((k) => matchKeyword(address, k))) {
-      return { reason: "location", label: "工作地不符" };
-    }
-    if (!salaryMatches(info.salary)) {
-      return { reason: "salary", label: isNegotiableSalary(info.salary) ? "薪资面议" : "薪资不符" };
-    }
-    const jobType = coarseJobTypeReject(info);
-    if (jobType) return { reason: "jobtype", label: `经验要求"${JOB_YEARS_LABEL[jobType.bucket]}"` };
-    return { reason: "", label: "" };
-  }
-
-  function coarseRejectReason(info, contacted) {
-    return coarseExplain(info, contacted).reason;
-  }
-
-  // 截取关键词命中处前后的一小段原文，命中部分用「」标出，方便在日志里核对误伤。
-  function keywordSnippet(text, keyword, radius = 10) {
-    const match = keywordRegex(keyword).exec(text);
-    if (!match) return "";
-    const start = Math.max(0, match.index - radius);
-    const end = Math.min(text.length, match.index + match[0].length + radius);
-    const before = text.slice(start, match.index).trimStart();
-    const after = text.slice(match.index + match[0].length, end).trimEnd();
-    return `${start > 0 ? "…" : ""}${before}「${match[0]}」${after}${end < text.length ? "…" : ""}`;
-  }
-
-  // ---------- 岗位类型与经验 ----------
-  // BOSS 的经验标签只有“在校生/应届生/经验不限/1年以内/1-3年/…”，没有“实习”，
-  // 所以综合卡片标签、职位名和职位描述来判断。
-  const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"], ["open", "经验不限/未标明"]];
-  const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
-  const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
-  const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
-  // 日志里显示的具体类型名（“经验不限”和“未标明”在筛选上是同一档，显示时区分开）
-  const JOB_SIGNAL_LABEL = { intern: "实习", campus: "校招/应届", social: "社招", open: "经验不限" };
-  const LEGACY_JOB_TYPES = { any: "open", unknown: "open" };
-
-  function normalizeJobTypeFilter(value) {
-    const pick = (list, all, legacy = {}) => {
-      if (!Array.isArray(list)) return all.map(([k]) => k);
-      const mapped = list.map((k) => legacy[k] || k);
-      return all.map(([k]) => k).filter((k) => mapped.includes(k));
-    };
-    return { types: pick(value?.types, JOB_TYPES, LEGACY_JOB_TYPES), years: pick(value?.years, JOB_YEARS) };
-  }
-
-  const jobTypeFilterActive = () => state.jobTypeFilter.types.length < JOB_TYPES.length
-    || (state.jobTypeFilter.types.includes("social") && state.jobTypeFilter.years.length < JOB_YEARS.length);
-
-  const CN_DIGITS = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
-  function parseYearNumber(text) {
-    if (/^\d+$/.test(text)) return Number(text);
-    if (text.length === 1) return CN_DIGITS[text] ?? NaN;
-    if (text[0] === "十") return 10 + (CN_DIGITS[text[1]] ?? NaN);
-    if (text[1] === "十") return (CN_DIGITS[text[0]] ?? NaN) * 10;
-    return NaN;
-  }
-  const yearsBucket = (n) => (n < 1 ? "y0_1" : n < 3 ? "y1_3" : n < 5 ? "y3_5" : "y5p");
-
-  // 命中位置前面紧挨着否定词时不算，比如“不接受实习生”“非应届”“不设实习期”
-  const isNegated = (text, index) => /(不接受|不招收?|不要求?|不考虑|不需要|不设|不提供|无需|不是|非)$/.test(text.slice(Math.max(0, index - 5), index));
-  // 命中位置后面跟着“优先/加分”等，说明只是加分项，不是硬性要求
-  const isPreferred = (text, end) => /^[^，,。；;！!\n]{0,4}?(?:者|的)?(?:优先|更佳|为佳|最佳|加分|更好)/.test(text.slice(end, end + 10));
-  function findSignal(text, regex, guard) {
-    regex.lastIndex = 0;
-    let match;
-    while ((match = regex.exec(text))) {
-      if (!isNegated(text, match.index) && !(guard && guard(text, match))) return match;
-    }
-    return null;
-  }
-
-  const N = "(\\d{1,2}|[一二两三四五六七八九十]{1,2})";
-  const JT_TITLE_INTERN = /实习|(?<![a-z])intern(?:ship)?s?(?![a-z])/gi;
-  const JT_CAMPUS = /应届(?:毕业)?生?|校园招聘|校招|秋招|春招|管培生?|毕业生|(?<!\d)(?:20)?\d{2}\s*届/g;
-  // “每周5天”可能是正式岗的作息，只认“至少/不少于/到岗 N 天”或每周 1-4 天
-  const JT_DESC_INTERN = /实习(?:期|生|岗|时长|周期|时间)|(?:每周|一周)(?:至少|不少于|到岗|出勤)\s*[\d一二三四五六]\s*天|(?:每周|一周)\s*[1-4一二三四]\s*天|可转正|转正机会|转正实习/g;
-  const JT_SOCIAL = /社招|社会招聘/g;
-  const JT_OPEN = /(?:工作)?经验不限|无需(?:工作)?经验|不限(?:工作)?经验|无(?:工作)?经验要求|接受(?:无经验|零基础)/g;
-  // “3年以上Java开发经验”“1-3年工作经验”“两年及以上相关经验”“3年+经验”
-  const JT_YEARS = new RegExp(`(?<![\\d.])${N}\\s*\\+?\\s*(?:[-~～至到]\\s*${N}\\s*)?年\\s*\\+?(?:及|或)?(以上|以下|以内|左右)?(?:的)?([^，,。；;！!、\\n]{0,10}?)经验`, "g");
-  // “经验3年以上”“经验要求：3-5年”“工作年限：3年以上”
-  const JT_YEARS_AFTER = new RegExp(`(?:经验|工作年限|从业年限)(?:要求)?\\s*[:：]?\\s*${N}\\s*(?:[-~～至到]\\s*${N}\\s*)?年(以上|及以上|左右)?`, "g");
-
-  function snippetAt(text, index, length, radius = 10) {
-    const start = Math.max(0, index - radius);
-    const end = Math.min(text.length, index + length + radius);
-    return `${start > 0 ? "…" : ""}${text.slice(start, index).trimStart()}「${text.slice(index, index + length)}」`
-      + `${text.slice(index + length, end).trimEnd()}${end < text.length ? "…" : ""}`;
-  }
-
-  function descYearsRequirement(desc) {
-    let best = null;
-    const consider = (n, match, upperBound) => {
-      if (!Number.isFinite(n) || n > 15) return;
-      if (isNegated(desc, match.index) || isPreferred(desc, match.index + match[0].length)) return;
-      if (upperBound) {
-        if (n > 1) return; // “3年以下经验”只是上限，不当作硬性要求
-        n = 0;
+    readUid() {
+      // SPA 插入的 script 可能没有执行，只提取 _PAGE 中的 uid，不执行脚本。
+      const ids = new Set();
+      for (const script of document.querySelectorAll("script:not([src])")) {
+        const id = this.inlineUid(script.textContent);
+        if (id) ids.add(id);
       }
-      if (!best || n > best.years) best = { years: n, evidence: `详情：${snippetAt(desc, match.index, match[0].length)}` };
-    };
-    let match;
-    JT_YEARS.lastIndex = 0;
-    while ((match = JT_YEARS.exec(desc))) {
-      if (/实习|在校|校园/.test(match[4] || "")) continue; // “1年以上实习经验”说的是对候选人的要求
-      consider(parseYearNumber(match[1]), match, match[3] === "以下" || match[3] === "以内");
-    }
-    JT_YEARS_AFTER.lastIndex = 0;
-    while ((match = JT_YEARS_AFTER.exec(desc))) consider(parseYearNumber(match[1]), match, false);
-    return best;
-  }
+      let runtimeId = "";
+      try { runtimeId = this.normalizeUid(window._PAGE?.uid); } catch (error) {}
+      if (runtimeId) ids.add(runtimeId);
+      return ids.size === 1 ? [...ids][0] : "";
+    },
 
-  // 返回 { kind: "years" | "soft" | "unknown", label, evidence, bucket?, types? }
-  // years：写明了年限要求，属于硬性条件；soft：实习/校招/经验不限/社招等类型信号，命中任一勾选项即可。
-  function classifyJob({ title = "", tags = [], desc = "", salary = "" }) {
-    const soft = new Map();
-    const addSoft = (type, evidence) => { if (!soft.has(type)) soft.set(type, evidence); };
-    // 按天计薪（如“200-300元/天”）基本是实习岗，很多实习岗职位名里并不写“实习”
-    if (/元\s*\/\s*[天日]/.test(salary)) addSoft("intern", `薪资「${salary}」`);
-    let cardYears = null;
-    tags.map((t) => t.trim()).forEach((tag) => {
-      if (/^(在校|应届|在校\/应届|在校生|应届生|应届毕业生)$/.test(tag)) addSoft("campus", `标签「${tag}」`);
-      else if (tag === "经验不限") addSoft("open", `标签「${tag}」`);
-      else if (/^\d+\s*天\/周$/.test(tag)) addSoft("intern", `标签「${tag}」`);
-      else if (/^1年以[内下]$/.test(tag)) cardYears = { years: 0, evidence: `标签「${tag}」` };
-      else {
-        const m = tag.match(/^(\d+)\s*-\s*\d+\s*年$/) || tag.match(/^(\d+)\s*年以上$/);
-        if (m) cardYears = { years: Number(m[1]), evidence: `标签「${tag}」` };
+    syncAccountSignal(id) {
+      const published = id && state.account.publishedUid !== id;
+      // 各页分开发布，避免旧页面的并发写入覆盖新账号公告。
+      if (published) {
+        const key = `${CURRENT_ACCOUNT_KEY}${state.account.pageStartedAt}:${state.account.signalId}`;
+        localStorage.setItem(key, JSON.stringify({ uid: id, pageStartedAt: state.account.pageStartedAt }));
+        state.account.publishedUid = id;
       }
-    });
-    // “x个月”标签可能是实习周期，也可能是短期项目，只在没有写年限时当作实习信号
-    const monthTag = tags.find((t) => /^\d+\s*个月$/.test(t.trim()));
-    if (monthTag && !cardYears) addSoft("intern", `标签「${monthTag.trim()}」`);
-    if (findSignal(title, JT_TITLE_INTERN)) addSoft("intern", `职位名「${title}」`);
-    if (findSignal(title, JT_CAMPUS)) addSoft("campus", `职位名「${title}」`);
-    let descYears = null;
-    if (desc) {
-      const notProbation = (text, m) => /试用期/.test(text.slice(Math.max(0, m.index - 12), m.index));
-      [["intern", JT_DESC_INTERN, notProbation], ["campus", JT_CAMPUS], ["social", JT_SOCIAL], ["open", JT_OPEN]].forEach(([type, regex, guard]) => {
-        const hit = findSignal(desc, regex, guard);
-        if (hit) addSoft(type, `详情：${snippetAt(desc, hit.index, hit[0].length)}`);
-      });
-      descYears = descYearsRequirement(desc);
-    }
-    const internStrong = soft.has("intern");
-    // BOSS 的实习岗经验一栏常写“在校/应届”，有实习信号时按实习处理
-    if (internStrong) soft.delete("campus");
-    // 卡片“1年以内”对实习岗只是默认值，不当作年限要求
-    const hard = [internStrong && cardYears?.years < 1 ? null : cardYears, descYears]
-      .filter(Boolean).sort((x, y) => y.years - x.years)[0];
-    if (hard) {
-      const bucket = yearsBucket(hard.years);
-      return { kind: "years", bucket, label: `社招·${JOB_YEARS_LABEL[bucket]}`, evidence: hard.evidence };
-    }
-    if (soft.size > 1) soft.delete("open");
-    if (soft.size) {
-      const types = [...soft.keys()];
-      return { kind: "soft", types, label: types.map((t) => JOB_SIGNAL_LABEL[t]).join("/"), evidence: soft.get(types[0]) };
-    }
-    return { kind: "unknown", label: "未标明", evidence: "" };
-  }
-
-  function jobTypeAccepted(result) {
-    const { types, years } = state.jobTypeFilter;
-    if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);
-    if (result.kind === "soft") {
-      return result.types.some((t) => (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
-    }
-    return types.includes("open");
-  }
-
-  state.jobTypeFilter = normalizeJobTypeFilter(getStoredJSON("zdlJobTypeFilter", null));
-
-  // 粗筛阶段只能看卡片：只有写明年限且不在范围内才排除，其余留到详情再判断
-  function coarseJobTypeReject(info) {
-    if (!jobTypeFilterActive()) return null;
-    const result = classifyJob({ title: info.title, tags: info.tags, salary: info.salary });
-    return result.kind === "years" && !jobTypeAccepted(result) ? result : null;
-  }
-
-  // ---------- 求职向导 ----------
-  // 方向：include 写进“职位名包含任一”；exclusive 的方向没被选中时，signature 写进“职位名排除”。
-  // allows：选中该方向时，不排除这些方向（全栈本身就含前后端，AI 应用常写成“AI后端”）。
-  const WIZARD_DIRECTIONS = [
-    { key: "backend", label: "后端", exclusive: true, include: "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师", signature: "后端|服务端" },
-    { key: "fullstack", label: "全栈", exclusive: false, include: "全栈|full[- ]?stack", allows: ["backend", "frontend"] },
-    { key: "ai", label: "AI应用/Agent", exclusive: false, include: "ai*|agent|智能体|大模型|llm|aigc|rag", allows: ["backend", "fullstack"] },
-    { key: "frontend", label: "前端", exclusive: true, include: "前端|h5|vue|react|小程序", signature: "前端|h5" },
-    { key: "testing", label: "测试", exclusive: true, include: "测试|测开|qa|质量保障", signature: "测试|测开|qa" },
-    { key: "data", label: "数据/大数据", exclusive: true, include: "数据开发|大数据|数仓|etl|数据工程|spark|flink|bi", signature: "大数据|数仓|数据开发|etl" },
-    { key: "algorithm", label: "算法", exclusive: true,
-      include: "算法|机器学习|深度学习|强化学习|多模态|大模型训练|数据挖掘|计算机视觉|自然语言|语音识别|cv|nlp|ocr|slam|推荐|搜索",
-      signature: "算法|机器学习|深度学习|强化学习|cv|nlp|推理优化" },
-    { key: "client", label: "客户端/移动端", exclusive: true, include: "客户端|安卓|android|ios|移动端|鸿蒙|harmonyos|flutter|app开发", signature: "客户端|安卓|android|ios|移动端|鸿蒙|flutter" },
-    { key: "embedded", label: "嵌入式/硬件", exclusive: true, include: "嵌入式|硬件|单片机|驱动|fpga|stm32|plc", signature: "嵌入式|硬件|单片机|fpga|驱动开发" },
-    { key: "ops", label: "运维/DevOps", exclusive: true, include: "运维|devops|sre|k8s|云原生", signature: "运维|devops|sre" },
-    { key: "game", label: "游戏", exclusive: true, include: "游戏|unity|ue[45]|cocos", signature: "游戏|unity|ue[45]" },
-    { key: "security", label: "安全", exclusive: true, include: "安全|渗透|逆向", signature: "安全|渗透|逆向" },
-  ];
-  // 技术栈：title 写进“职位名包含任一”（“Java开发”这类职位名），jd 写进“详情包含任一”
-  const WIZARD_STACKS = [
-    { key: "java", label: "Java", title: "java", jd: "java|spring*|mybatis|微服务" },
-    { key: "python", label: "Python", title: "python", jd: "python|django|flask|fastapi" },
-    { key: "go", label: "Go", title: "golang|go开发|go语言", jd: "golang|go语言|go开发|gin" },
-    { key: "cpp", label: "C/C++", title: "c\\+\\+|cpp", jd: "c\\+\\+|cpp|qt" },
-    { key: "js", label: "JS/TS", title: "javascript|typescript|node*", jd: "javascript|typescript|vue|react|node*" },
-    { key: "php", label: "PHP", title: "php", jd: "php|laravel|thinkphp" },
-    { key: "dl", label: "深度学习框架", title: "pytorch|tensorflow", jd: "pytorch|tensorflow|paddle*|cuda|transformers|深度学习框架" },
-  ];
-  const WIZARD_NON_TECH = "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理";
-  const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
-  const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
-  const defaultWizardAnswers = () => ({
-    identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
-    minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
-  });
-
-  const hasFilterRules = () => state.includeTags.length || state.coarseBlockedTags.length || state.coarseRequiredTags.length
-    || state.detailOptionalTags.length || state.detailRequiredTags.length || state.detailBlockedTags.length
-    || state.locationTags.length || state.blockedCompanies.length || state.recruiterIncludeTags.length || jobTypeFilterActive();
-
-  // 由向导答案生成配置里向导负责的那几项；其他项（排除公司、工作地、详情排除、今日目标）保持不变
-  function generateWizardConfig(answers) {
-    const a = { ...defaultWizardAnswers(), ...answers };
-    const selected = new Set(a.directions);
-    const allowed = new Set();
-    WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).forEach((d) => (d.allows || []).forEach((k) => allowed.add(k)));
-    const includeTags = [
-      ...WIZARD_DIRECTIONS.filter((d) => selected.has(d.key)).map((d) => d.include),
-      ...WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.title),
-    ];
-    const coarseBlockedTags = WIZARD_DIRECTIONS
-      .filter((d) => d.exclusive && !selected.has(d.key) && !allowed.has(d.key))
-      .map((d) => d.signature);
-    if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
-    const types = [...a.identities];
-    if (a.includeOpen) types.push("open");
-    const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
-    const min = String(parseInt(a.minSalary, 10) || "");
-    return {
-      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
-      includeTags,
-      coarseRequiredTags: [],
-      coarseBlockedTags,
-      detailRequiredTags: [],
-      detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
-      salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
-      recruiterIncludeTags: a.onlyHr ? ["hr*|招聘|人事"] : [],
-      recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
-    };
-  }
-
-  const NOT_DETAIL = "li.job-card-box, #boss-pro-panel, .zdl-settings-panel, .zdl-history-panel";
-
-  function getDetailRoot() {
-    return document.querySelector(".job-detail-body .desc")?.closest(".job-detail-container, .job-detail-box") || document;
-  }
-
-  // 优先在右侧详情区域里找；找不到时在整页找，但排除左侧列表卡片和脚本自己的面板。
-  function findInDetail(selector) {
-    const root = getDetailRoot();
-    const inRoot = root !== document ? root.querySelector(selector) : null;
-    return inRoot || Array.from(document.querySelectorAll(selector)).find((el) => !el.closest(NOT_DETAIL)) || null;
-  }
-
-  function highlightCard(card) {
-    document.querySelectorAll(".zdl-current-card").forEach((el) => el.classList.remove("zdl-current-card"));
-    card?.classList.add("zdl-current-card");
-  }
-
-  // 筛选设置里的实时预览：用当前页已加载的岗位卡片试跑粗筛，不点开岗位、不消耗投递次数。
-  const CoarsePreview = {
-    root: null,
-    summaryEl: null,
-    warnEl: null,
-    detailEl: null,
-    toggleBtn: null,
-    isOpen: false,
-    timer: 0,
-    cardCount: -1,
-
-    create() {
-      const root = document.createElement("div");
-      root.className = "zdl-preview";
-      const head = document.createElement("div");
-      head.className = "zdl-preview-head";
-      this.summaryEl = document.createElement("span");
-      this.summaryEl.className = "zdl-preview-summary";
-      this.summaryEl.setAttribute("aria-live", "polite");
-      this.toggleBtn = document.createElement("button");
-      this.toggleBtn.type = "button";
-      this.toggleBtn.className = "zdl-preview-toggle";
-      this.toggleBtn.setAttribute("aria-expanded", "false");
-      this.toggleBtn.addEventListener("click", () => {
-        this.isOpen = !this.isOpen;
-        this.render();
-      });
-      head.append(this.summaryEl, this.toggleBtn);
-      this.warnEl = document.createElement("div");
-      this.warnEl.className = "zdl-preview-warn";
-      this.detailEl = document.createElement("div");
-      this.detailEl.className = "zdl-preview-detail";
-      root.append(head, this.warnEl, this.detailEl);
-      this.root = root;
-      return root;
+      const keys = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index))
+        .filter((key) => key?.startsWith(CURRENT_ACCOUNT_KEY));
+      const olderKeys = [];
+      for (const key of keys) {
+        const raw = localStorage.getItem(key);
+        if (raw === null) continue;
+        const signal = JSON.parse(raw);
+        if (!this.normalizeUid(signal?.uid) || !Number.isFinite(signal.pageStartedAt)) throw new Error("账号同步记录异常");
+        if (signal.pageStartedAt < state.account.pageStartedAt) olderKeys.push(key);
+        else if (id && signal.uid !== id) {
+          state.account.needsReload = true;
+          stopProcess();
+        }
+      }
+      // 新页面只清理比自己旧的公告，不触碰账号投递记录。
+      if (published && !state.account.needsReload) olderKeys.forEach((key) => localStorage.removeItem(key));
     },
 
-    schedule() {
-      clearTimeout(this.timer);
-      this.timer = setTimeout(() => this.render(), 60);
+    readStats() {
+      const raw = localStorage.getItem(DELIVERY_STATS_KEY);
+      const validRecord = (record) => record && typeof record.dailyDate === "string"
+        && Number.isSafeInteger(record.dailyCount) && record.dailyCount >= 0
+        && Number.isSafeInteger(record.totalCount) && record.totalCount >= record.dailyCount;
+      if (raw !== null) {
+        const stats = JSON.parse(raw);
+        if (stats?.version !== 1 || !validRecord(stats.machine) || !stats.accounts
+          || typeof stats.accounts !== "object" || Array.isArray(stats.accounts)
+          || Object.entries(stats.accounts).some(([id, record]) => !this.normalizeUid(id) || !validRecord(record))) {
+          throw new Error("投递记录格式异常，请先备份并检查本机记录");
+        }
+        return stats;
+      }
+      // 旧记录没有账号归属，只继承到本机统计，保留原 key 作为备份。
+      const machine = {
+        dailyDate: localStorage.getItem("deliveryDate") || "",
+        dailyCount: Number(localStorage.getItem("dailyDeliveryCount") || "0"),
+        totalCount: Number(localStorage.getItem("totalDeliveryCount") || "0"),
+      };
+      if (!validRecord(machine)) throw new Error("旧投递次数异常，请先备份并检查本机记录");
+      return { version: 1, machine, accounts: {} };
     },
 
-    // 当前页卡片数变化（用户滚动加载、换搜索词）时刷新
-    poll() {
-      if (!this.root || elements.settingsPanel?.hidden) return;
-      const count = document.querySelectorAll("li.job-card-box").length;
-      if (count !== this.cardCount) this.render();
-    },
-
-    compute() {
-      const contacted = state.account.id ? ContactedJobs.setFor(state.account.id) : new Set();
-      const rows = Array.from(document.querySelectorAll("li.job-card-box")).map((card) => {
-        const info = readCardInfo(card);
-        return { card, info, ...coarseExplain(info, contacted) };
-      });
-      const title = (row) => row.info.title.toLowerCase();
-      // “想要的岗位”：职位名满足你写的必须词和包含词。排除词挡掉这些岗位时视为冲突。
-      const hasPositive = state.includeTags.length > 0 || state.coarseRequiredTags.length > 0;
-      const wanted = (row) => hasPositive
-        && state.coarseRequiredTags.every((k) => matchKeyword(title(row), k))
-        && (!state.includeTags.length || state.includeTags.some((k) => matchKeyword(title(row), k)));
-      const fields = { title, company: (row) => row.info.company.toLowerCase(), address: (row) => row.info.address.toLowerCase() };
-      const tagStats = (tags, field, checkConflict = false) => tags.map((kw) => {
-        const hits = rows.filter((row) => matchKeyword(fields[field](row), kw));
-        const conflicts = checkConflict ? hits.filter(wanted) : [];
-        return { kw, hits: hits.length, conflicts };
-      });
+    forToday(record) {
+      const today = new Date().toLocaleDateString();
       return {
-        rows,
-        lists: [
-          { el: elements.coarseRequiredTagList, stats: tagStats(state.coarseRequiredTags, "title"), what: "职位名" },
-          { el: elements.includeTagList, stats: tagStats(state.includeTags, "title"), what: "职位名" },
-          { el: elements.coarseBlockedTagList, stats: tagStats(state.coarseBlockedTags, "title", true), what: "职位名" },
-          { el: elements.locationTagList, stats: tagStats(state.locationTags, "address"), what: "工作地" },
-          { el: elements.blockedCompanyTagList, stats: tagStats(state.blockedCompanies, "company"), what: "公司名" },
-        ],
+        dailyDate: today,
+        dailyCount: record?.dailyDate === today ? record.dailyCount : 0,
+        totalCount: record?.totalCount || 0,
       };
     },
 
+    sync() {
+      const id = this.readUid();
+      if (state.account.id && id !== state.account.id) {
+        state.account.needsReload = true;
+        stopProcess();
+      }
+      state.account.id = id;
+      if (!state.account.writeFailed) {
+        try {
+          this.syncAccountSignal(id);
+          const stats = this.readStats();
+          Object.assign(state.delivery, this.forToday(stats.accounts[id]));
+          Object.assign(state.machineDelivery, this.forToday(stats.machine));
+          state.account.error = "";
+        } catch (error) {
+          state.account.error = "无法读取投递记录，请检查本机存储后刷新";
+          stopProcess();
+        }
+      }
+      this.render();
+    },
+
     render() {
-      if (!this.root) return;
-      clearTimeout(this.timer);
-      const { rows, lists } = this.compute();
-      this.cardCount = rows.length;
-      this._renderTagBadges(rows.length ? lists : []);
-      this.toggleBtn.hidden = !rows.length;
-      this.toggleBtn.textContent = this.isOpen ? "收起明细" : "明细";
-      this.toggleBtn.setAttribute("aria-expanded", String(this.isOpen));
-
-      if (!rows.length) {
-        this.summaryEl.textContent = isJobsPage()
-          ? "当前页还没有岗位，在 BOSS 上搜索或往下滚动加载后，这里会预览筛选结果"
-          : "到「职位」页后，这里会用当前页的岗位预览筛选结果";
-        this.warnEl.replaceChildren();
-        this.detailEl.replaceChildren();
-        return;
+      const known = !!state.account.id;
+      const daily = state.delivery.dailyCount;
+      const target = state.targetCount;
+      if (elements.kpiValueEl) {
+        const pct = known && target ? Math.min(100, Math.round((daily / target) * 100)) : 0;
+        elements.kpiValueEl.textContent = known ? String(daily) : "–";
+        elements.kpiTargetEl.textContent = `/ ${target} 次`;
+        elements.kpiTotalEl.textContent = known ? `累计 ${state.delivery.totalCount} 次` : "";
+        elements.kpiBarEl.firstElementChild.style.width = `${pct}%`;
+        elements.kpiBarEl.setAttribute("aria-valuenow", String(pct));
+        elements.kpiBarEl.classList.toggle("done", known && daily >= target);
       }
-
-      const collected = rows.filter((row) => !row.reason);
-      const contactedCount = rows.filter((row) => row.reason === "contacted").length;
-      this.summaryEl.innerHTML = "";
-      this.summaryEl.append(
-        `当前页 ${rows.length} 个岗位，会收集 `,
-        Object.assign(document.createElement("strong"), { textContent: String(collected.length) }),
-        ` 个${contactedCount ? `（另有 ${contactedCount} 个已沟通过）` : ""}`,
-      );
-
-      // 岗位类型分布（只看卡片和职位名，详情里的信息要打开岗位才知道）
-      const typeCounts = {};
-      rows.forEach((row) => {
-        const result = classifyJob({ title: row.info.title, tags: row.info.tags, salary: row.info.salary });
-        const key = result.kind === "years" ? "社招" : result.kind === "soft" ? JOB_SIGNAL_LABEL[result.types[0]] : "看详情才知道";
-        typeCounts[key] = (typeCounts[key] || 0) + 1;
-      });
-      const order = [...Object.values(JOB_SIGNAL_LABEL), "看详情才知道"];
-      const typeText = "岗位类型（按卡片）：" + order.filter((k) => typeCounts[k]).map((k) => `${k} ${typeCounts[k]}`).join(" · ");
-
-      const conflicts = lists[2].stats.filter((stat) => stat.conflicts.length);
-      const conflictLines = conflicts.map((stat) =>
-        `排除词“${stat.kw}”挡掉了 ${stat.conflicts.length} 个命中包含词的岗位，例如「${stat.conflicts[0].info.title}」`);
-      // 收起时只给一行提示，具体内容放进明细，避免预览区占太多位置
-      this.warnEl.replaceChildren();
-      if (conflicts.length && !this.isOpen) {
-        const warn = document.createElement("button");
-        warn.type = "button";
-        warn.className = "zdl-preview-warn-btn";
-        warn.textContent = `${conflicts.length} 个排除词挡掉了你想要的岗位，点击查看`;
-        warn.title = conflictLines.join("\n");
-        warn.addEventListener("click", () => { this.isOpen = true; this.render(); });
-        this.warnEl.appendChild(warn);
+      if (elements.accountsBtn) {
+        elements.accountsBtn.querySelector(".zdl-accounts-label").textContent = known ? `账号 ${this.maskUid(state.account.id)}` : "未识别账号";
+        elements.accountsBtn.title = `本机 · 今日 ${state.machineDelivery.dailyCount} 次 · 累计 ${state.machineDelivery.totalCount} 次（点击查看各账号）`;
       }
-
-      this.detailEl.hidden = !this.isOpen;
-      if (this.isOpen) this._renderDetail(rows, typeText, conflicts);
+      if (elements.accountStatusEl) elements.accountStatusEl.textContent = state.account.error
+        || (state.account.needsReload ? "账号已变化，请刷新页面后启动" : !state.account.id ? "请确认已登录 BOSS，等待账号信息加载"
+          : !isJobsPage() && !state.activeRun ? "当前不是职位页，请切换到「职位」页后启动" : "");
+      if (elements.controlBtn) {
+        const label = state.activeRun
+          ? (state.isRunning ? "停止投递" : state.activeRun.started ? "正在停止…" : "准备中…") : "开始投递";
+        if (elements.controlBtn.dataset.label !== label) {
+          elements.controlBtn.dataset.label = label;
+          elements.controlBtn.innerHTML = `${state.activeRun ? UI_ICONS.stop : UI_ICONS.play}<span>${label}</span>`;
+        }
+        elements.controlBtn.disabled = !state.isRunning && (!!state.activeRun || !state.account.id
+          || state.account.needsReload || !!state.account.error || !isJobsPage());
+        elements.controlBtn.classList.toggle("is-running", !!state.activeRun);
+      }
+      if (elements.miniIcon) {
+        const label = state.isRunning ? "海投助手投递中，点击展开" : "展开海投助手";
+        elements.miniIcon.classList.toggle("running", state.isRunning);
+        elements.miniIcon.title = label;
+        elements.miniIcon.setAttribute("aria-label", label);
+      }
+      if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
+      if (elements.configImportBtn) UI._updateConfigControls();
     },
 
-    _renderTagBadges(lists) {
-      [elements.coarseRequiredTagList, elements.includeTagList, elements.coarseBlockedTagList,
-        elements.locationTagList, elements.blockedCompanyTagList].forEach((el) => {
-        el?.querySelectorAll(".zdl-tag-hit").forEach((badge) => badge.remove());
-        el?.querySelectorAll(".zdl-tag").forEach((tag) => { tag.classList.remove("conflict"); tag.removeAttribute("title"); });
-      });
-      lists.forEach(({ el, stats, what }) => {
-        if (!el) return;
-        el.querySelectorAll(".zdl-tag").forEach((tag) => {
-          const stat = stats[Number(tag.dataset.index)];
-          if (!stat) return;
-          const badge = document.createElement("span");
-          badge.className = "zdl-tag-hit" + (stat.hits ? "" : " zero");
-          badge.textContent = String(stat.hits);
-          tag.insertBefore(badge, tag.querySelector(".zdl-tag-remove"));
-          let tip = `当前页${what}命中 ${stat.hits} 个岗位`;
-          if (stat.conflicts.length) {
-            tag.classList.add("conflict");
-            tip += `；其中 ${stat.conflicts.length} 个也命中包含词，例如：${stat.conflicts.slice(0, 3).map((row) => row.info.title).join("、")}`;
-          }
-          tag.title = tip;
-        });
-      });
+    isCurrent(run, allowStopped = false) {
+      if (!run || state.activeRun !== run || state.account.needsReload || state.account.error) return false;
+      if (!isJobsPage()) {
+        if (state.isRunning) Core.log("已离开职位页，投递已停止");
+        stopProcess(run);
+        return false;
+      }
+      try { this.syncAccountSignal(run.uid); } catch (error) { this.sync(); return false; }
+      if (state.account.needsReload) return false;
+      if (this.readUid() !== run.uid) {
+        this.sync();
+        stopProcess(run);
+        return false;
+      }
+      if (state.delivery.dailyDate !== new Date().toLocaleDateString()) this.sync();
+      return !state.account.error && (allowStopped || state.isRunning);
     },
 
-    // 在页面上定位某个岗位卡片并短暂高亮
-    locate(card) {
-      card.scrollIntoView({ behavior: "smooth", block: "center" });
-      card.classList.remove("zdl-preview-flash");
-      void card.offsetWidth;
-      card.classList.add("zdl-preview-flash");
-      clearTimeout(card.__zdlFlashTimer);
-      card.__zdlFlashTimer = setTimeout(() => card.classList.remove("zdl-preview-flash"), 1800);
+    prepare(run) {
+      const stats = this.readStats();
+      if (!stats.accounts[run.uid]) stats.accounts[run.uid] = this.forToday();
+      localStorage.setItem(DELIVERY_STATS_KEY, JSON.stringify(stats));
+      this.sync();
     },
 
-    _renderDetail(rows, typeText, conflicts) {
-      const counts = {};
-      rows.forEach((row) => { if (row.reason) counts[row.label] = (counts[row.label] || 0) + 1; });
-      const reasons = document.createElement("div");
-      reasons.className = "zdl-preview-reasons";
-      const top = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-      reasons.textContent = top.length ? `排除原因：${top.map(([label, n]) => `${label} ${n}`).join(" · ")}` : "当前页岗位全部会被收集";
-      const list = document.createElement("div");
-      list.className = "zdl-preview-list";
-      // 会收集的排在前面，其余按原因分组
-      const sorted = [...rows].sort((a, b) => Number(!!a.reason) - Number(!!b.reason) || a.label.localeCompare(b.label));
-      sorted.forEach((row) => {
-        const item = document.createElement("button");
-        item.type = "button";
-        item.className = "zdl-preview-row";
-        item.title = "在页面上定位这个岗位";
-        const name = document.createElement("span");
-        name.className = "zdl-preview-title";
-        name.textContent = row.info.title || "（无职位名）";
-        const company = document.createElement("span");
-        company.className = "zdl-preview-company";
-        company.textContent = row.info.company;
-        const status = document.createElement("span");
-        status.className = "zdl-preview-status" + (row.reason ? "" : " ok");
-        status.textContent = row.reason ? row.label : "会收集";
-        item.append(name, company, status);
-        item.addEventListener("click", () => this.locate(row.card));
-        list.appendChild(item);
-      });
-      const types = document.createElement("div");
-      types.className = "zdl-preview-types";
-      types.textContent = typeText;
-      const warns = document.createElement("div");
-      warns.className = "zdl-preview-warn-list";
-      // 每条冲突列出被挡掉的岗位，点岗位名即可在页面上定位
-      conflicts.forEach((stat) => {
-        const line = document.createElement("div");
-        line.className = "zdl-preview-warn-item";
-        const text = document.createElement("span");
-        text.textContent = `排除词“${stat.kw}”挡掉了 ${stat.conflicts.length} 个命中包含词的岗位：`;
-        line.appendChild(text);
-        stat.conflicts.slice(0, 5).forEach((row) => {
-          const job = document.createElement("button");
-          job.type = "button";
-          job.className = "zdl-preview-job-link";
-          job.textContent = row.info.title || "（无职位名）";
-          job.title = `${row.info.company} · 点击在页面上定位`;
-          job.addEventListener("click", () => this.locate(row.card));
-          line.appendChild(job);
-        });
-        if (stat.conflicts.length > 5) line.append(` 等 ${stat.conflicts.length} 个`);
-        warns.appendChild(line);
-      });
-      this.detailEl.replaceChildren(...(conflicts.length ? [warns] : []), types, reasons, list);
+    recordSuccess(run) {
+      if (!this.isCurrent(run, true)) return false;
+      const stats = this.readStats();
+      const account = this.forToday(stats.accounts[run.uid]);
+      const machine = this.forToday(stats.machine);
+      account.dailyCount++; account.totalCount++;
+      machine.dailyCount++; machine.totalCount++;
+      stats.accounts[run.uid] = account;
+      stats.machine = machine;
+      try {
+        // 账号与本机统计在同一条记录内一次写入，避免只更新一方。
+        localStorage.setItem(DELIVERY_STATS_KEY, JSON.stringify(stats));
+      } catch (error) {
+        state.account.writeFailed = true;
+        state.account.error = "本次成功的计数保存失败，已停止；请核对记录";
+        stopProcess(run);
+        throw error;
+      }
+      Object.assign(state.delivery, account);
+      Object.assign(state.machineDelivery, machine);
+      this.render();
+      return true;
     },
   };
+
+  // 页面自检：BOSS 改版后选择器可能失效，这时脚本会静默跳过所有岗位，或者一直点沟通却不计数。
+  // 这里在开始投递前检查职位列表，并在投递中发现连续卡在同一步时停下来。
+
+  const FEEDBACK = "如果页面看起来正常，可能是 BOSS 改版了，请到 GitHub 反馈";
+
+  // 开始投递前：用列表前几个卡片读出的信息判断页面结构是否还认得。
+  // infos 为 readCardInfo 的结果数组。errors 不为空时不启动；warnings 只在日志里提醒。
+  function checkJobCards(infos) {
+    if (!infos.length) {
+      return { errors: [`当前页没有找到职位卡片。请等列表加载出来后再开始；${FEEDBACK}`], warnings: [] };
+    }
+    const none = (field) => infos.every((info) => !info[field]);
+    const errors = [];
+    const warnings = [];
+    if (none("title")) errors.push(`读不到职位名，无法按规则筛选。${FEEDBACK}`);
+    if (none("jobId")) warnings.push("读不到岗位链接，已沟通过的岗位可能会被重复点开");
+    if (none("company")) warnings.push("读不到公司名，「排除公司」暂时不生效");
+    if (none("salary")) warnings.push("读不到薪资，薪资筛选暂时不生效");
+    return { errors, warnings };
+  }
+
+  // 投递中：同一步连续失败到 limit 次就该停下来。某一步成功一次，该步的计数清零。
+  const STREAK_LIMIT = 3;
+  const STREAK_MESSAGES = {
+    detail: "连续 3 个岗位详情加载超时",
+    chat: "连续 3 个岗位找不到沟通按钮",
+    confirm: "连续 3 次点了沟通，但没有确认投递成功",
+  };
+
+  function createStreakGuard(limit = STREAK_LIMIT) {
+    const counts = {};
+    return {
+      // 返回 true 表示已连续失败到上限
+      fail(step) {
+        counts[step] = (counts[step] || 0) + 1;
+        return counts[step] >= limit;
+      },
+      ok(step) {
+        counts[step] = 0;
+      },
+    };
+  }
+
+  const streakStopMessage = (step) =>
+    `页面检查异常：${STREAK_MESSAGES[step]}，已自动停止。可能是网络问题，也可能是 BOSS 改版了；确认页面正常后可重新开始，一直出现请到 GitHub 反馈`;
 
   const Core = {
     async startProcessing(run) {
@@ -3510,7 +3601,7 @@
 
     async autoScrollJobList(roundSize, run) {
       return new Promise((resolve) => {
-        const cardSelector = "li.job-card-box";
+        const cardSelector = BOSS.jobCard;
         const maxHistory = 5;
         const baseWait = CONFIG.BASIC_INTERVAL + 500;
         let cardCountHistory = [];
@@ -3583,7 +3674,7 @@
       // 粗筛：只看列表卡片上的信息
       if (!state.jobList || state.jobList.length === 0) {
         const contacted = ContactedJobs.setFor(run.uid);
-        const cards = document.querySelectorAll("li.job-card-box");
+        const cards = document.querySelectorAll(BOSS.jobCard);
         let skippedContacted = 0;
         state.jobList = [];
         cards.forEach((card) => {
@@ -3630,14 +3721,19 @@
       highlightCard(cardEl);
       const detailReady = await this.openDetail(item, run);
       if (!Delivery.isCurrent(run)) return;
-      if (!detailReady) return skip("详情加载超时");
+      if (!detailReady) {
+        skip("详情加载超时");
+        this.stopIfBroken(run, "detail");
+        return;
+      }
+      run.guard.ok("detail");
 
       let activeTime = "未知";
-      const onlineTag = findInDetail(".boss-online-tag");
+      const onlineTag = findInDetail(BOSS.recruiterOnline);
       if (onlineTag && onlineTag.textContent.trim() === "在线") {
         activeTime = "在线";
       } else {
-        activeTime = findInDetail(".boss-active-time")?.textContent?.trim() || "未知";
+        activeTime = findInDetail(BOSS.recruiterActive)?.textContent?.trim() || "未知";
       }
       if (activeStatusFilter.length > 0 && !activeStatusFilter.includes(activeTime)) {
         return skip(`招聘者"${activeTime}"`, "招聘者活跃状态不符");
@@ -3650,11 +3746,11 @@
         const root = getDetailRoot();
         const detailTags = root === document ? []
           // 经验、学历在详情头部的 .tag-list 里；.job-label-list 是技能标签，不参与类型判断
-          : Array.from(root.querySelectorAll(".tag-list li"), (li) => li.textContent.trim());
+          : Array.from(root.querySelectorAll(BOSS.detailTags), (li) => li.textContent.trim());
         const jobType = classifyJob({
           title: item.job,
           tags: [...(item.tags || []), ...detailTags],
-          desc: cleanDesc(document.querySelector(".job-detail-body .desc")),
+          desc: cleanDesc(document.querySelector(BOSS.detailDesc)),
           salary: item.salary,
         });
         if (!jobTypeAccepted(jobType)) {
@@ -3664,7 +3760,7 @@
       }
       if (state.detailBlockedTags.length || state.detailRequiredTags.length || state.detailOptionalTags.length) {
         // 判断用小写文本，日志片段从原文截取（关键词正则不区分大小写，命中位置一致）
-        const descRaw = cleanDesc(document.querySelector(".job-detail-body .desc"));
+        const descRaw = cleanDesc(document.querySelector(BOSS.detailDesc));
         const descText = descRaw.toLowerCase();
         const quote = (text, kw) => {
           const snippet = keywordSnippet(text, kw);
@@ -3680,8 +3776,8 @@
           const root = getDetailRoot();
           const join = (selector) => Array.from(root.querySelectorAll(selector))
             .map((li) => li.textContent.trim()).join(" ");
-          const jobName = findInDetail(".job-name")?.textContent?.trim() || "";
-          const wideRaw = [descRaw, join(".job-label-list li"), jobName, join(".tag-list li")].filter(Boolean).join(" ");
+          const jobName = findInDetail(BOSS.detailTitle)?.textContent?.trim() || "";
+          const wideRaw = [descRaw, join(BOSS.detailSkillTags), jobName, join(BOSS.detailTags)].filter(Boolean).join(" ");
           const wideText = wideRaw.toLowerCase();
 
           const missedRequired = state.detailRequiredTags.find((kw) => !matchKeyword(wideText, kw));
@@ -3699,7 +3795,7 @@
 
       // 只投指定招聘者：读不到招聘者职位时不拦截，避免页面结构变化导致全部被跳过
       if (state.recruiterIncludeTags.length) {
-        const bossRaw = (findInDetail(".boss-info-attr")?.textContent || "").replace(/\s+/g, " ").trim();
+        const bossRaw = (findInDetail(BOSS.recruiterTitle)?.textContent || "").replace(/\s+/g, " ").trim();
         if (bossRaw) {
           const hitRecruiter = state.recruiterIncludeTags.find((kw) => matchKeyword(bossRaw.toLowerCase(), kw));
           if (!hitRecruiter) return skip(`招聘者"${bossRaw}"不在只投范围`, "招聘者职位不符");
@@ -3709,15 +3805,19 @@
         }
       }
 
-      const chatBtn = findInDetail("a.op-btn-chat");
+      const chatBtn = findInDetail(BOSS.chatButton);
       const btnText = chatBtn?.textContent.trim() || "";
-      if (btnText !== "立即沟通") {
-        if (btnText === "继续沟通") {
+      if (btnText !== BOSS.chatButtonNew) {
+        if (btnText === BOSS.chatButtonContacted) {
+          run.guard.ok("chat");
           ContactedJobs.add(run.uid, item.jobId);
           return skip("之前已沟通过", "已沟通过");
         }
-        return skip("没有沟通按钮");
+        skip("没有沟通按钮");
+        this.stopIfBroken(run, "chat");
+        return;
       }
+      run.guard.ok("chat");
 
       state.currentIndex++;
       if (!Delivery.isCurrent(run)) return;
@@ -3739,12 +3839,34 @@
 
       const confirmed = await this.handleGreetingModal(item.company, item.logo, run);
       if (confirmed) {
+        run.guard.ok("confirm");
         ContactedJobs.add(run.uid, item.jobId);
         run.delivered++;
         this.log(`${prefix}，已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
       } else if (Delivery.isCurrent(run, true)) {
         this.log(`${prefix}，未确认投递成功，未增加次数`);
+        this.stopIfBroken(run, "confirm");
       }
+    },
+
+    // 开始投递前检查职位列表能不能读出来，读不出关键信息时不启动。
+    checkPageBeforeStart() {
+      const cards = Array.from(document.querySelectorAll(BOSS.jobCard)).slice(0, 15);
+      const { errors, warnings } = checkJobCards(cards.map(readCardInfo));
+      warnings.forEach((warning) => this.log(`页面检查：${warning}`));
+      if (!errors.length) return true;
+      errors.forEach((error) => this.log(`页面检查异常：${error}`));
+      showNotification("页面检查未通过，未开始投递，详见日志", "error");
+      return false;
+    },
+
+    // 同一步连续失败到上限时停止投递，返回是否已停止。
+    stopIfBroken(run, step) {
+      if (!run.guard.fail(step) || !Delivery.isCurrent(run)) return false;
+      this.log(streakStopMessage(step));
+      showNotification("投递已自动停止，详见日志", "error");
+      stopProcess(run);
+      return true;
     },
 
     // 一次投递任务结束后汇总结果，方便看出哪条规则过严。
@@ -3762,9 +3884,9 @@
     async openDetail(item, run) {
       const normalize = (text) => (text || "").replace(/\s+/g, "").toLowerCase();
       const wanted = normalize(item.job);
-      const readDesc = () => cleanDesc(document.querySelector(".job-detail-body .desc"));
-      const detailTitle = () => [...document.querySelectorAll(".job-name")]
-        .find((el) => !el.closest("li.job-card-box, #boss-pro-panel"));
+      const readDesc = () => cleanDesc(document.querySelector(BOSS.detailDesc));
+      const detailTitle = () => [...document.querySelectorAll(BOSS.detailTitle)]
+        .find((el) => !el.closest(`${BOSS.jobCard}, #boss-pro-panel`));
       const titleMatches = (el) => {
         const title = normalize(el?.textContent);
         return !!title && !!wanted && (title.includes(wanted) || wanted.includes(title));
@@ -3795,21 +3917,21 @@
 
     async handleLimitDialogs(run) {
       // 阻塞等待上限弹窗出现（120 提醒 / 150 上限），超时 2 秒自动返回
-      const dialog = await this.waitFor(() => document.querySelector(".chat-block-dialog"), 2000, 400);
+      const dialog = await this.waitFor(() => document.querySelector(BOSS.limitDialog), 2000, 400);
       if (!Delivery.isCurrent(run, true)) return false;
       if (!dialog) return false;
 
-      const bodyText = dialog.querySelector(".chat-block-body")?.textContent || "";
-      const is150Limit = bodyText.includes("150") || bodyText.includes("休息一下") || bodyText.includes("无法进行沟通");
-      const sureBtn = dialog.querySelector(".default-btn.sure-btn");
+      const bodyText = dialog.querySelector(BOSS.limitDialogBody)?.textContent || "";
+      const is150Limit = BOSS.limitReachedTexts.some((text) => bodyText.includes(text));
+      const sureBtn = dialog.querySelector(BOSS.dialogConfirm);
       if (sureBtn) sureBtn.click();
 
       // 可能还有第二层弹窗
       await this.delay(400);
       if (!Delivery.isCurrent(run, true)) return is150Limit;
-      const second = document.querySelector(".chat-block-dialog");
+      const second = document.querySelector(BOSS.limitDialog);
       if (second) {
-        const btn2 = second.querySelector(".default-btn.sure-btn");
+        const btn2 = second.querySelector(BOSS.dialogConfirm);
         if (btn2) btn2.click();
       }
       return is150Limit;
@@ -3818,8 +3940,8 @@
     async handleGreetingModal(companyName, companyLogo, run) {
       // 阻塞等待"留在此页"按钮出现（无渐入动画，直接等 DOM 就绪，超时 5 秒）
       let btn = await this.waitFor(() =>
-        [...document.querySelectorAll(".default-btn.cancel-btn")]
-          .find((b) => b.textContent.trim() === "留在此页"),
+        [...document.querySelectorAll(BOSS.dialogCancel)]
+          .find((b) => b.textContent.trim() === BOSS.stayOnPageText),
         5000, 300
       );
       if (!btn || !Delivery.isCurrent(run, true)) return false;
@@ -3855,8 +3977,8 @@
         if (!Delivery.isCurrent(run, true)) break;
         btn.click();
         await this.delay(300);
-        btn = [...document.querySelectorAll(".default-btn.cancel-btn")]
-          .find((b) => b.textContent.trim() === "留在此页");
+        btn = [...document.querySelectorAll(BOSS.dialogCancel)]
+          .find((b) => b.textContent.trim() === BOSS.stayOnPageText);
       }
       return true;
     },
@@ -3973,7 +4095,7 @@
       showNotification("当前浏览器不支持投递任务锁，请使用新版 Chrome 或 Edge", "error");
       return;
     }
-    const run = { uid: state.account.id, started: false, cancelled: false, delivered: 0, skips: {} };
+    const run = { uid: state.account.id, started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard() };
     state.activeRun = run;
     Delivery.render();
     try {
@@ -3989,6 +4111,7 @@
           Core.log(`当前账号今日已投递 ${state.delivery.dailyCount} 次，已达今日目标或上限`);
           return;
         }
+        if (!Core.checkPageBeforeStart()) return;
         state.jobList = [];
         state.currentIndex = 0;
         state.jobIndexOffset = 0;
@@ -4023,50 +4146,6 @@
         state.activeRun = null;
         Delivery.render();
       }
-    }
-  }
-
-
-  async function init() {
-    try {
-      const today = new Date().toLocaleDateString();
-      if (state.logDate !== today) {
-        state.logDate = today;
-        state.logEntries = [];
-        localStorage.setItem("zdlLogDate", today);
-        saveLogEntries();
-      }
-      injectCSS();
-      UI.init();
-      Delivery.sync();
-      window.addEventListener("storage", (event) => {
-        if (event.key === DELIVERY_STATS_KEY || event.key?.startsWith(CURRENT_ACCOUNT_KEY) || event.key === null) Delivery.sync();
-        if (event.key === null || CONFIG_STORAGE_KEYS.includes(event.key)) configExternalChanged = true;
-        if (event.key === null || CONFIG_STORAGE_KEYS.includes(event.key) || event.key === CONFIG_UNDO_KEY) UI._updateConfigControls();
-      });
-      window.addEventListener("focus", () => Delivery.sync());
-      setInterval(() => { if (!document.hidden) Delivery.sync(); }, 1500);
-      document.addEventListener("visibilitychange", () => { if (!document.hidden) Delivery.sync(); });
-      // 恢复持久化的日志条目到 DOM
-      const hasHistory = state.logEntries.length > 0;
-      const logPanel = document.querySelector("#pro-log");
-      if (logPanel && hasHistory) {
-        state.logEntries.forEach((entry) => {
-          logPanel.appendChild(Core.renderLogItem(entry));
-        });
-        logPanel.scrollTop = logPanel.scrollHeight;
-      }
-      if (!hasHistory) {
-        Core.log('欢迎使用海投助手，设置好筛选条件后点击"开始投递"');
-      }
-      try {
-        UI.showTutorialIfNeeded();
-      } catch (error) {
-        console.warn("新手教程初始化失败:", error);
-      }
-    } catch (error) {
-      console.error("初始化失败:", error);
-      showNotification("初始化失败", "error");
     }
   }
 
@@ -4433,6 +4512,49 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
     document.head.appendChild(style);
   }
 
+  async function init() {
+    try {
+      const today = new Date().toLocaleDateString();
+      if (state.logDate !== today) {
+        state.logDate = today;
+        state.logEntries = [];
+        localStorage.setItem("zdlLogDate", today);
+        saveLogEntries();
+      }
+      injectCSS();
+      UI.init();
+      Delivery.sync();
+      window.addEventListener("storage", (event) => {
+        if (event.key === DELIVERY_STATS_KEY || event.key?.startsWith(CURRENT_ACCOUNT_KEY) || event.key === null) Delivery.sync();
+        if (event.key === null || CONFIG_STORAGE_KEYS.includes(event.key)) markConfigExternalChanged();
+        if (event.key === null || CONFIG_STORAGE_KEYS.includes(event.key) || event.key === CONFIG_UNDO_KEY) UI._updateConfigControls();
+      });
+      window.addEventListener("focus", () => Delivery.sync());
+      setInterval(() => { if (!document.hidden) Delivery.sync(); }, 1500);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) Delivery.sync(); });
+      // 恢复持久化的日志条目到 DOM
+      const hasHistory = state.logEntries.length > 0;
+      const logPanel = document.querySelector("#pro-log");
+      if (logPanel && hasHistory) {
+        state.logEntries.forEach((entry) => {
+          logPanel.appendChild(Core.renderLogItem(entry));
+        });
+        logPanel.scrollTop = logPanel.scrollHeight;
+      }
+      if (!hasHistory) {
+        Core.log('欢迎使用海投助手，设置好筛选条件后点击"开始投递"');
+      }
+      try {
+        UI.showTutorialIfNeeded();
+      } catch (error) {
+        console.warn("新手教程初始化失败:", error);
+      }
+    } catch (error) {
+      console.error("初始化失败:", error);
+      showNotification("初始化失败", "error");
+    }
+  }
+
   // 非职位页只显示一个入口卡片，引导首次安装的用户找到脚本。
   const ENTRY_DISMISSED_KEY = "zdlEntryDismissed";
   const EntryGuide = {
@@ -4514,4 +4636,5 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
   // 部分脚本管理器在 load 之后才注入脚本，此时直接启动。
   if (document.readyState === "complete") boot();
   else window.addEventListener("load", boot, { once: true });
+
 })();

@@ -1,0 +1,14 @@
+{
+  "name": "boss-haitou-helper",
+  "private": true,
+  "description": "BOSS 直聘海投助手用户脚本的源码，构建后输出单个 .user.js",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.js",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "rollup": "^4.65.0"
+  }
+}
