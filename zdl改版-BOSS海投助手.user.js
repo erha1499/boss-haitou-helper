@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         boss海投助手
 // @namespace    https://github.com/erha1499
-// @version      2.1.1
+// @version      2.2.0
 // @description  BOSS 直聘批量筛选与自动沟通：岗位类型、关键词、薪资、招聘者多层筛选，实时预览筛选结果。安装后打开 BOSS 直聘「职位」页使用
 // @author       erha1499
 // @match        https://www.zhipin.com/*
