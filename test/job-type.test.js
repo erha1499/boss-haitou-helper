@@ -99,3 +99,36 @@ test("岗位类型是否在投递范围", () => {
   assert.equal(jobTypeMatches(socialOnly, social1to3), false);
   assert.equal(jobTypeMatches(socialOnly, normalizeJobTypeFilter({ types: ["social"], years: ["none"] })), true);
 });
+
+test("描述里单独的“毕业生”不算校招，明确的应届说法才算", () => {
+  assert.equal(kindOf({ title: "Java开发工程师", desc: "全日制统招本科及以上毕业生，熟悉Java、Spring" }), "unknown");
+  assert.equal(kindOf({ title: "Java开发工程师", tags: ["经验不限"], desc: "统招本科毕业生" }), "open");
+  assert.equal(kindOf({ title: "Java开发", desc: "面向2027年毕业生" }), "campus");
+  assert.equal(kindOf({ title: "Java开发", desc: "欢迎应届毕业生投递" }), "campus");
+  // 职位名里写“毕业生”仍算校招
+  assert.equal(kindOf({ title: "2026毕业生-Java开发" }), "campus");
+});
+
+test("“指导实习生”这类说法不算实习，招实习生的说法仍算", () => {
+  assert.equal(kindOf({ title: "高级Java工程师", desc: "负责核心系统设计，指导实习生和初级工程师" }), "unknown");
+  assert.equal(kindOf({ title: "技术经理", desc: "带领新人和实习生完成项目" }), "unknown");
+  assert.equal(kindOf({ title: "技术经理", desc: "负责培养实习生" }), "unknown");
+  assert.equal(kindOf({ title: "Java开发", desc: "招聘实习生若干名" }), "intern");
+  assert.equal(kindOf({ title: "Java开发", desc: "本岗位为实习岗" }), "intern");
+});
+
+test("识别英文写的年限要求", () => {
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "3+ years of experience with Go" }), "years:y3_5");
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "At least 5 years’ professional software development experience." }), "years:y5p");
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "2-4 yrs experience in Java" }), "years:y1_3");
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "1 year experience" }), "years:y1_3");
+  const result = classifyJob({ title: "Backend Engineer", desc: "Requirements: 3+ years of experience with Go" });
+  assert.match(result.evidence, /「3\+ years of experience」/);
+});
+
+test("英文的实习经历、加分项不算年限要求", () => {
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "1 year of internship experience" }), "unknown");
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "2+ years of Kubernetes experience is a plus" }), "unknown");
+  assert.equal(kindOf({ title: "Backend Engineer", desc: "3 years of experience preferred" }), "unknown");
+});
+

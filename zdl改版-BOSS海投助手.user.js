@@ -257,7 +257,10 @@
 
   const N = "(\\d{1,2}|[一二两三四五六七八九十]{1,2})";
   const JT_TITLE_INTERN = /实习|(?<![a-z])intern(?:ship)?s?(?![a-z])/gi;
-  const JT_CAMPUS = /应届(?:毕业)?生?|校园招聘|校招|秋招|春招|管培生?|毕业生|(?<!\d)(?:20)?\d{2}\s*届/g;
+  // 描述里单独的“毕业生”不算：社招常写“统招本科及以上毕业生”，只认“应届毕业生”“2027届”“2027年毕业生”这类说法
+  const JT_CAMPUS = /应届(?:毕业)?生?|校园招聘|校招|秋招|春招|管培生?|(?<!\d)(?:20)?\d{2}\s*届|(?<!\d)20\d{2}\s*年?\s*(?:及以后)?毕业生/g;
+  // 职位名里写“毕业生”基本就是招应届生
+  const JT_CAMPUS_TITLE = new RegExp(`${JT_CAMPUS.source}|毕业生`, "g");
   // “每周5天”可能是正式岗的作息，只认“至少/不少于/到岗 N 天”或每周 1-4 天
   const JT_DESC_INTERN = /实习(?:期|生|岗|时长|周期|时间)|(?:每周|一周)(?:至少|不少于|到岗|出勤)\s*[\d一二三四五六]\s*天|(?:每周|一周)\s*[1-4一二三四]\s*天|可转正|转正机会|转正实习/g;
   const JT_SOCIAL = /社招|社会招聘/g;
@@ -265,6 +268,11 @@
   // “3年以上Java开发经验”“1-3年工作经验”“两年及以上相关经验”“3年+经验”
   const JT_YEARS = new RegExp(`(?<![\\d.])${N}\\s*\\+?\\s*(?:[-~～至到]\\s*${N}\\s*)?年\\s*\\+?(?:及|或)?(以上|以下|以内|左右)?(?:的)?([^，,。；;！!、\\n]{0,10}?)经验`, "g");
   // “经验3年以上”“经验要求：3-5年”“工作年限：3年以上”
+  // 英文：“3+ years of experience”“at least 5 years' experience in Go”“2-4 yrs experience”
+  const JT_YEARS_EN = /(?<![\d.])(\d{1,2})\s*\+?\s*(?:(?:-|~|to)\s*\d{1,2}\s*)?\+?\s*(?:years?|yrs?)['’]?\s+((?:[\w+#./-]+\s+){0,4}?)experience/gi;
+  // 英文加分项：“… is a plus”“… preferred”“nice to have”
+  const isPreferredEn = (text, end) => /^[^.;\n]{0,40}?\b(?:preferred|is a plus|a plus|nice to have|bonus)\b/i.test(text.slice(end, end + 50));
+
   const JT_YEARS_AFTER = new RegExp(`(?:经验|工作年限|从业年限)(?:要求)?\\s*[:：]?\\s*${N}\\s*(?:[-~～至到]\\s*${N}\\s*)?年(以上|及以上|左右)?`, "g");
 
   function snippetAt(text, index, length, radius = 10) {
@@ -293,6 +301,12 @@
     }
     JT_YEARS_AFTER.lastIndex = 0;
     while ((match = JT_YEARS_AFTER.exec(desc))) consider(parseYearNumber(match[1]), match, false);
+    JT_YEARS_EN.lastIndex = 0;
+    while ((match = JT_YEARS_EN.exec(desc))) {
+      if (/intern|co-?op|academic|research/i.test(match[2])) continue; // “1 year of internship experience”说的是候选人的经历
+      if (isPreferredEn(desc, match.index + match[0].length)) continue;
+      consider(Number(match[1]), match, false);
+    }
     return best;
   }
 
@@ -318,11 +332,13 @@
     const monthTag = tags.find((t) => /^\d+\s*个月$/.test(t.trim()));
     if (monthTag && !cardYears) addSoft("intern", `标签「${monthTag.trim()}」`);
     if (findSignal(title, JT_TITLE_INTERN)) addSoft("intern", `职位名「${title}」`);
-    if (findSignal(title, JT_CAMPUS)) addSoft("campus", `职位名「${title}」`);
+    if (findSignal(title, JT_CAMPUS_TITLE)) addSoft("campus", `职位名「${title}」`);
     let descYears = null;
     if (desc) {
-      const notProbation = (text, m) => /试用期/.test(text.slice(Math.max(0, m.index - 12), m.index));
-      [["intern", JT_DESC_INTERN, notProbation], ["campus", JT_CAMPUS], ["social", JT_SOCIAL], ["open", JT_OPEN]].forEach(([type, regex, guard]) => {
+      // 正式岗的“试用期…可转正”，以及高级岗的“指导实习生”“带领新人和实习生”，都不是实习信号
+      const notIntern = (text, m) => /试用期/.test(text.slice(Math.max(0, m.index - 12), m.index))
+        || /(?:指导|带领|培养|管理|带教|辅导|培训)[^，,。；;！!\n]{0,4}$/.test(text.slice(Math.max(0, m.index - 10), m.index));
+      [["intern", JT_DESC_INTERN, notIntern], ["campus", JT_CAMPUS], ["social", JT_SOCIAL], ["open", JT_OPEN]].forEach(([type, regex, guard]) => {
         const hit = findSignal(desc, regex, guard);
         if (hit) addSoft(type, `详情：${snippetAt(desc, hit.index, hit[0].length)}`);
       });
