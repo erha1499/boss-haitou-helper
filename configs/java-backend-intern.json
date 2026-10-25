@@ -1,0 +1,59 @@
+{
+  "type": "zdl-boss-config",
+  "version": 1,
+  "config": {
+    "targetCount": 150,
+    "salaryFilter": {
+      "type": "none",
+      "min": "",
+      "max": "",
+      "negotiable": true
+    },
+    "recruiterActivityStatus": [
+      "在线",
+      "刚刚活跃",
+      "今日活跃",
+      "3日内活跃"
+    ],
+    "jobTypeFilter": {
+      "types": [
+        "intern",
+        "open"
+      ],
+      "years": [
+        "y0_1",
+        "y1_3",
+        "y3_5",
+        "y5p",
+        "none"
+      ]
+    },
+    "includeTags": [
+      "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师",
+      "java"
+    ],
+    "coarseRequiredTags": [],
+    "coarseBlockedTags": [
+      "前端|h5",
+      "测试|测开|qa",
+      "大数据|数仓|数据开发|etl",
+      "算法|机器学习|深度学习|强化学习|cv|nlp|推理优化",
+      "客户端|安卓|android|ios|移动端|鸿蒙|flutter",
+      "嵌入式|硬件|单片机|fpga|驱动开发",
+      "运维|devops|sre",
+      "游戏|unity|ue[45]",
+      "安全|渗透|逆向",
+      "销售|客服|主播|电销|地推|售前|售后|技术支持|实施|运营|美术|原画|商务|产品经理|产品助理"
+    ],
+    "locationTags": [],
+    "blockedCompanies": [],
+    "detailBlockedTags": [
+      "(?<!非|不是|拒绝|无)(?:外包|驻场|人力外派|劳务派遣)"
+    ],
+    "detailRequiredTags": [],
+    "detailOptionalTags": [
+      "java|spring*|mybatis|微服务"
+    ],
+    "recruiterIncludeTags": []
+  }
+}

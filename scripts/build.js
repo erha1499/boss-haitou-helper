@@ -1,14 +1,21 @@
-// 把 src/ 打包成单个用户脚本，写到仓库根目录（脚本管理器从这个文件检查更新）。
-// 旧文件名下同时写一份相同的内容：从旧地址安装的用户更新一次后，脚本头里的更新地址就换成新文件名了。
+// 把 src/ 打包成单个用户脚本，写到仓库根目录（脚本管理器从这个文件检查更新），
+// 同时把 scripts/presets.js 里的常用岗位配置生成到 configs/。
 // 用法：npm run build；加 --check 只检查已提交的脚本是否是最新构建，不写文件。
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { rollup } from "rollup";
+import { PRESETS, presetConfigText } from "./presets.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 export const OUTPUT_FILE = `${root}boss-haitou-helper.user.js`;
-export const LEGACY_OUTPUT_FILE = `${root}zdl改版-BOSS海投助手.user.js`;
-const OUTPUT_FILES = [OUTPUT_FILE, LEGACY_OUTPUT_FILE];
+export const CONFIGS_DIR = `${root}configs/`;
+
+// 生成的全部文件：{ 路径: 内容 }
+export async function buildAll() {
+  const files = { [OUTPUT_FILE]: await buildScript() };
+  PRESETS.forEach((preset) => { files[`${CONFIGS_DIR}${preset.file}`] = presetConfigText(preset); });
+  return files;
+}
 
 export async function buildScript() {
   const meta = (await readFile(`${root}src/meta.js`, "utf8")).trimEnd();
@@ -28,18 +35,18 @@ export async function buildScript() {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const code = await buildScript();
+  const files = await buildAll();
   if (process.argv.includes("--check")) {
-    for (const file of OUTPUT_FILES) {
-      const current = await readFile(file, "utf8").catch(() => "");
-      if (current !== code) {
+    for (const [file, content] of Object.entries(files)) {
+      if (await readFile(file, "utf8").catch(() => "") !== content) {
         console.error(`${file.slice(root.length)} 不是最新构建，请运行 npm run build`);
         process.exit(1);
       }
     }
-    console.log("用户脚本已是最新构建");
+    console.log("用户脚本和常用岗位配置都已是最新构建");
   } else {
-    for (const file of OUTPUT_FILES) await writeFile(file, code);
-    console.log(`已生成 ${OUTPUT_FILES.map((file) => file.slice(root.length)).join("、")}`);
+    await mkdir(CONFIGS_DIR, { recursive: true });
+    for (const [file, content] of Object.entries(files)) await writeFile(file, content);
+    console.log(`已生成 ${OUTPUT_FILE.slice(root.length)} 和 ${PRESETS.length} 套常用岗位配置`);
   }
 }
