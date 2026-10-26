@@ -17,8 +17,7 @@
     ],
     "jobTypeFilter": {
       "types": [
-        "intern",
-        "open"
+        "intern"
       ],
       "years": [
         "y0_1",

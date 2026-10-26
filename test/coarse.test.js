@@ -47,7 +47,7 @@ test("薪资", () => {
 });
 
 test("卡片写明年限且不在范围内时，列表阶段就排除", () => {
-  const internOnly = normalizeJobTypeFilter({ types: ["intern", "open"] });
+  const internOnly = normalizeJobTypeFilter({ types: ["intern"] });
   const result = explainCoarse(card({ tags: ["3-5年"] }), null, { ...noRules, jobTypeFilter: internOnly });
   assert.equal(result.reason, "jobtype");
   assert.equal(result.label, '经验要求"3-5年"');

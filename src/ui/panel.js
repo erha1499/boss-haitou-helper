@@ -137,7 +137,14 @@ export const PanelMethods = {
     elements.logTabs = tabs;
     const logTools = document.createElement("div");
     logTools.className = "zdl-log-tools";
-    logTools.append(tabs, clearLog);
+    // 有被细筛跳过的岗位时显示，点开复查、补投
+    elements.remedyBtn = document.createElement("button");
+    elements.remedyBtn.type = "button";
+    elements.remedyBtn.className = "zdl-remedy-btn";
+    elements.remedyBtn.hidden = true;
+    elements.remedyBtn.title = "查看今天被细筛跳过的岗位，误跳过的可以补投";
+    elements.remedyBtn.addEventListener("click", () => this._showRemedyPanel());
+    logTools.append(elements.remedyBtn, tabs, clearLog);
     logHeading.append(logTitle, logTools);
     logSection.append(logHeading, elements.log);
     const resizeHandle = document.createElement("div");
@@ -343,6 +350,7 @@ export const PanelMethods = {
       tab.classList.toggle("active", tab.dataset.filter === filter);
       tab.setAttribute("aria-pressed", String(tab.dataset.filter === filter));
     });
+    this._refreshRemedyButton();
     if (filter !== "all" && !counts[filter]) log.dataset.empty = filter === "ok" ? "还没有投递记录" : "还没有跳过的岗位";
     else delete log.dataset.empty;
   },

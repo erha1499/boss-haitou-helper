@@ -77,14 +77,14 @@ test("什么都没写时归入未标明", () => {
 
 test("规范化岗位类型设置", () => {
   const all = normalizeJobTypeFilter(null);
-  assert.deepEqual(all.types, ["intern", "campus", "social", "open"]);
+  assert.deepEqual(all.types, ["intern", "campus", "social"]);
   assert.deepEqual(all.years, ["y0_1", "y1_3", "y3_5", "y5p", "none"]);
-  // 旧版本的 any/unknown 合并成 open，顺序按固定顺序，未知值丢掉
-  assert.deepEqual(normalizeJobTypeFilter({ types: ["unknown", "intern", "xxx"], years: [] }), { types: ["intern", "open"], years: [] });
+  // 旧版本的“经验不限/未标明”（open、any、unknown）现在不用选，和未知值一起丢掉；顺序按固定顺序
+  assert.deepEqual(normalizeJobTypeFilter({ types: ["unknown", "campus", "open", "intern", "xxx"], years: [] }), { types: ["intern", "campus"], years: [] });
 });
 
 test("岗位类型是否在投递范围", () => {
-  const internOnly = normalizeJobTypeFilter({ types: ["intern", "open"] });
+  const internOnly = normalizeJobTypeFilter({ types: ["intern"] });
   assert.equal(isJobTypeFilterActive(internOnly), true);
   assert.equal(isJobTypeFilterActive(normalizeJobTypeFilter(null)), false);
   assert.equal(jobTypeMatches(classifyJob({ title: "后端实习" }), internOnly), true);
@@ -130,5 +130,17 @@ test("英文的实习经历、加分项不算年限要求", () => {
   assert.equal(kindOf({ title: "Backend Engineer", desc: "1 year of internship experience" }), "unknown");
   assert.equal(kindOf({ title: "Backend Engineer", desc: "2+ years of Kubernetes experience is a plus" }), "unknown");
   assert.equal(kindOf({ title: "Backend Engineer", desc: "3 years of experience preferred" }), "unknown");
+});
+
+test("没标类型、“经验不限”的岗位不管选了什么类型都照常收集", () => {
+  const filters = [["intern"], ["campus"], ["social"]].map((types) => normalizeJobTypeFilter({ types, years: ["y1_3"] }));
+  for (const filter of filters) {
+    assert.equal(jobTypeMatches(classifyJob({ title: "后端开发" }), filter), true);
+    assert.equal(jobTypeMatches(classifyJob({ title: "后端开发", tags: ["经验不限"] }), filter), true);
+  }
+  // 标了类型、不在范围内的照样跳过
+  const internOnly = normalizeJobTypeFilter({ types: ["intern"] });
+  assert.equal(jobTypeMatches(classifyJob({ title: "后端开发", tags: ["在校/应届"] }), internOnly), false);
+  assert.equal(jobTypeMatches(classifyJob({ title: "后端开发", desc: "要求3年以上工作经验" }), internOnly), false);
 });
 

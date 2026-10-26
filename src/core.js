@@ -9,6 +9,7 @@ import { classifyJob } from "./rules/job-type.js";
 import { keywordSnippet, matchKeyword } from "./rules/keywords.js";
 import { RunStatus } from "./run-status.js";
 import { CONFIG_FIELD_LABELS, formatConfigValue, getCurrentConfig } from "./settings-store.js";
+import { SkippedJobs } from "./skipped.js";
 import { saveLogEntries, state } from "./state.js";
 import { UI } from "./ui/index.js";
 import { showNotification } from "./ui/notify.js";
@@ -22,6 +23,11 @@ function rulesKey() {
   for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
   return hash.toString(36);
 }
+
+// 按岗位 id 在当前页找卡片（补投、定位时用）
+export const findCardById = (jobId) => (jobId
+  ? Array.from(document.querySelectorAll(BOSS.jobCard)).find((card) => ContactedJobs.idOf(card) === jobId) || null
+  : null);
 
 const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id;
 
@@ -238,10 +244,16 @@ export const Core = {
     const cumulativeTotal = state.jobIndexOffset + state.jobList.length;
     const idx = state.jobIndexOffset + state.currentIndex + 1;
     const prefix = `第${idx}/${cumulativeTotal}个，[${item.address}][${item.company}][${item.job}][${item.salary}]`;
-    const skip = (message, key = message) => {
+    // remediable：被规则挡掉或加载超时的岗位记进“可补投”，误跳过的可以事后补投
+    const skip = (message, key = message, remediable = false) => {
       this.log(`${prefix}，${message}，已跳过`);
       run.skips[key] = (run.skips[key] || 0) + 1;
       state.currentIndex++;
+      if (remediable) {
+        SkippedJobs.add(run.uid, {
+          jobId: item.jobId, title: item.job, company: item.company, salary: item.salary, address: item.address, reason: message,
+        });
+      }
       RunStatus.render();
     };
     highlightCard(cardEl);
@@ -252,7 +264,7 @@ export const Core = {
     if (!detailReady) {
       // 加载超时的岗位本次不再试，下次开始时重试
       cardEl.dataset.zdlTimeout = run.id;
-      skip("详情加载超时");
+      skip("详情加载超时", "详情加载超时", true);
       this.stopIfBroken(run, "detail");
       return;
     }
@@ -267,7 +279,7 @@ export const Core = {
       activeTime = findInDetail(BOSS.recruiterActive)?.textContent?.trim() || "未知";
     }
     if (activeStatusFilter.length > 0 && !activeStatusFilter.includes(activeTime)) {
-      return skip(`招聘者"${activeTime}"`, "招聘者活跃状态不符");
+      return skip(`招聘者"${activeTime}"`, "招聘者活跃状态不符", true);
     }
 
     let matchReason = "";
@@ -285,7 +297,7 @@ export const Core = {
         salary: item.salary,
       });
       if (!jobTypeAccepted(jobType)) {
-        return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`);
+        return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`, true);
       }
       matchReason = `类型"${jobType.label}"`;
     }
@@ -300,7 +312,7 @@ export const Core = {
 
       // 排除词：只匹配职位描述
       const hitBlocked = state.detailBlockedTags.find((kw) => matchKeyword(descText, kw));
-      if (hitBlocked) return skip(`命中排除词"${hitBlocked}"${quote(descRaw, hitBlocked)}`, `详情排除"${hitBlocked}"`);
+      if (hitBlocked) return skip(`命中排除词"${hitBlocked}"${quote(descRaw, hitBlocked)}`, `详情排除"${hitBlocked}"`, true);
 
       // 必须/任一：匹配职位描述、职位标签和职位名，只在详情区域内取，避免左侧列表干扰
       if (state.detailRequiredTags.length || state.detailOptionalTags.length) {
@@ -312,12 +324,12 @@ export const Core = {
         const wideText = wideRaw.toLowerCase();
 
         const missedRequired = state.detailRequiredTags.find((kw) => !matchKeyword(wideText, kw));
-        if (missedRequired) return skip(`缺少必须词"${missedRequired}"`, `缺少"${missedRequired}"`);
+        if (missedRequired) return skip(`缺少必须词"${missedRequired}"`, `缺少"${missedRequired}"`, true);
         if (state.detailRequiredTags.length) matchReason = `必须"${state.detailRequiredTags.join("、")}"`;
 
         if (state.detailOptionalTags.length) {
           const matchedOptional = state.detailOptionalTags.filter((kw) => matchKeyword(wideText, kw));
-          if (!matchedOptional.length) return skip("详情没有命中任一关键词");
+          if (!matchedOptional.length) return skip("详情没有命中任一关键词", "详情没有命中任一关键词", true);
           matchReason = (matchReason ? matchReason + "；" : "") + `任一"${matchedOptional.join("、")}"${quote(wideRaw, matchedOptional[0])}`;
         }
       }
@@ -329,56 +341,122 @@ export const Core = {
       const bossRaw = (findInDetail(BOSS.recruiterTitle)?.textContent || "").replace(/\s+/g, " ").trim();
       if (bossRaw) {
         const hitRecruiter = state.recruiterIncludeTags.find((kw) => matchKeyword(bossRaw.toLowerCase(), kw));
-        if (!hitRecruiter) return skip(`招聘者"${bossRaw}"不在只投范围`, "招聘者职位不符");
+        if (!hitRecruiter) return skip(`招聘者"${bossRaw}"不在只投范围`, "招聘者职位不符", true);
         matchReason = (matchReason ? matchReason + "；" : "") + `招聘者"${bossRaw}"`;
       } else {
         matchReason = (matchReason ? matchReason + "；" : "") + "未读到招聘者职位，未做招聘者筛选";
       }
     }
 
-    const chatBtn = findInDetail(BOSS.chatButton);
-    const btnText = chatBtn?.textContent.trim() || "";
-    if (btnText !== BOSS.chatButtonNew) {
-      if (btnText === BOSS.chatButtonContacted) {
-        run.guard.ok("chat");
-        ContactedJobs.add(run.uid, item.jobId);
-        return skip("之前已沟通过", "已沟通过");
-      }
+    const result = await this.contact(run, item);
+    if (result === "contacted") return skip("之前已沟通过", "已沟通过");
+    if (result === "nobutton") {
       skip("没有沟通按钮");
       this.stopIfBroken(run, "chat");
       return;
     }
-    run.guard.ok("chat");
-
     state.currentIndex++;
-    if (!Delivery.isCurrent(run)) return;
-    if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) {
-      this.log(`${prefix}，已达今日目标 ${state.targetCount} 次，自动停止`);
-      stopProcess(run);
-      return;
+    this.logContactResult(run, result, prefix, `已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
+  },
+
+  // 在已打开的详情里点“立即沟通”，处理上限弹窗和投递成功弹窗。返回：
+  // delivered 投递成功 / contacted 之前沟通过 / nobutton 没有沟通按钮 / target 已达今日目标或上限 /
+  // limit 遇到 BOSS 150 次上限 / unconfirmed 点了但没确认成功 / stopped 投递已停止。
+  async contact(run, item) {
+    const chatBtn = findInDetail(BOSS.chatButton);
+    const btnText = chatBtn?.textContent.trim() || "";
+    if (btnText !== BOSS.chatButtonNew) {
+      if (btnText !== BOSS.chatButtonContacted) return "nobutton";
+      run.guard.ok("chat");
+      ContactedJobs.add(run.uid, item.jobId);
+      return "contacted";
     }
+    run.guard.ok("chat");
+    if (!Delivery.isCurrent(run)) return "stopped";
+    if (state.delivery.dailyCount >= Math.min(state.targetCount, CONFIG.DAILY_LIMIT)) return "target";
     chatBtn.click();
 
     // 检测 BOSS 限制弹窗（120 提醒 / 150 上限）
     const isLimitReached = await this.handleLimitDialogs(run);
-    if (!Delivery.isCurrent(run, true)) return;
-    if (isLimitReached) {
-      this.log(`${prefix}，BOSS限制：今日沟通已达150次上限，自动停止`);
-      stopProcess(run);
-      return;
-    }
+    if (!Delivery.isCurrent(run, true)) return "stopped";
+    if (isLimitReached) return "limit";
 
     const confirmed = await this.handleGreetingModal(item.company, item.logo, item.job, run);
     if (confirmed) {
       run.guard.ok("confirm");
       ContactedJobs.add(run.uid, item.jobId);
+      SkippedJobs.remove(run.uid, [item.jobId]);
       run.delivered++;
       RunStatus.render();
-      this.log(`${prefix}，已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
-    } else if (Delivery.isCurrent(run, true)) {
-      this.log(`${prefix}，未确认投递成功，未增加次数`);
-      this.stopIfBroken(run, "confirm");
+      return "delivered";
     }
+    return Delivery.isCurrent(run, true) ? "unconfirmed" : "stopped";
+  },
+
+  // 把 contact 的结果写进日志，需要停下来时停止投递。返回是否应继续处理下一个岗位。
+  logContactResult(run, result, prefix, deliveredText) {
+    if (result === "delivered") {
+      this.log(`${prefix}，${deliveredText}`);
+      return true;
+    }
+    if (result === "target") {
+      this.log(state.delivery.dailyCount >= CONFIG.DAILY_LIMIT
+        ? `${prefix}，今日已达每日上限 ${CONFIG.DAILY_LIMIT} 次，自动停止`
+        : `${prefix}，已达今日目标 ${state.targetCount} 次，自动停止`);
+      stopProcess(run);
+      return false;
+    }
+    if (result === "limit") {
+      this.log(`${prefix}，BOSS限制：今日沟通已达150次上限，自动停止`);
+      stopProcess(run);
+      return false;
+    }
+    if (result === "unconfirmed") {
+      this.log(`${prefix}，未确认投递成功，未增加次数`);
+      return !this.stopIfBroken(run, "confirm");
+    }
+    return false;
+  },
+
+  // 补投：用户在“可补投”里选中的岗位，按岗位 id 在当前页找到卡片，打开详情后跳过细筛直接沟通。
+  // 其余和正常投递一样：计入今日次数，到今日目标或每日上限就停。
+  async processRemedy(run) {
+    const items = run.remedy;
+    for (let i = 0; i < items.length; i++) {
+      if (!Delivery.isCurrent(run)) return;
+      const saved = items[i];
+      const prefix = `第${i + 1}/${items.length}个，[${saved.address}][${saved.company}][${saved.title}][${saved.salary}]`;
+      const card = findCardById(saved.jobId);
+      if (!card) {
+        this.log(`${prefix}，不在当前页，无法补投，已跳过`);
+        continue;
+      }
+      const info = readCardInfo(card);
+      const item = { el: card, jobId: saved.jobId, company: info.company || saved.company, logo: info.logo, job: info.title || saved.title };
+      highlightCard(card);
+      RunStatus.setActivity(`正在补投：${item.company} · ${item.job}`);
+      const ready = await this.openDetail(item, run);
+      if (!Delivery.isCurrent(run)) return;
+      if (!ready) {
+        this.log(`${prefix}，详情加载超时，已跳过`);
+        if (this.stopIfBroken(run, "detail")) return;
+        continue;
+      }
+      run.guard.ok("detail");
+      const result = await this.contact(run, item);
+      if (result === "contacted") {
+        SkippedJobs.remove(run.uid, [saved.jobId]);
+        this.log(`${prefix}，之前已沟通过，已跳过`);
+        continue;
+      }
+      if (result === "nobutton") {
+        this.log(`${prefix}，没有沟通按钮，已跳过`);
+        if (this.stopIfBroken(run, "chat")) return;
+        continue;
+      }
+      if (!this.logContactResult(run, result, prefix, "已投递，补投")) return;
+    }
+    if (Delivery.isCurrent(run)) stopProcess(run);
   },
 
   // 开始投递前检查职位列表能不能读出来，读不出关键信息时不启动。
@@ -404,12 +482,18 @@ export const Core = {
 
   // 一次投递任务结束后汇总结果，方便看出哪条规则过严。
   logRunSummary(run) {
+    if (run.remedy) {
+      this.log(`本次补投成功 ${run.delivered} 个，共选了 ${run.remedy.length} 个`);
+      return;
+    }
     const skips = Object.entries(run.skips).sort((a, b) => b[1] - a[1]);
     const skipped = skips.reduce((sum, [, n]) => sum + n, 0);
     if (!run.delivered && !skipped) return;
     const top = skips.slice(0, 6).map(([key, n]) => `${key} ${n}`).join("、");
     const more = skips.length > 6 ? " 等" : "";
     this.log(`本次共投递 ${run.delivered} 个，详情页跳过 ${skipped} 个${top ? `（${top}${more}）` : ""}`);
+    const remediable = SkippedJobs.list(run.uid).length;
+    if (remediable) this.log(`提示：被细筛跳过的 ${remediable} 个岗位可以点日志上方的「可补投」复查，误跳过的可以补投`);
   },
 
   // 点开岗位并等右侧详情切换到这个岗位，避免用上一个岗位的详情做筛选。
@@ -551,7 +635,10 @@ export const Core = {
     if (job) {
       const [, index, total, address, company, title, salary, rest] = job;
       const status = /已投递/.test(rest) ? "ok" : /已跳过/.test(rest) ? "skip" : "info";
-      const reason = rest.replace(/，?已跳过$/, "").replace(/^已投递(?:，匹配\s*)?/, status === "ok" ? "匹配 " : "");
+      // 已投递：“已投递，匹配 xx”显示“匹配 xx”，“已投递，补投…”显示“补投…”
+      const reason = status === "ok"
+        ? rest.replace(/^已投递，匹配\s*/, "匹配 ").replace(/^已投递，?/, "")
+        : rest.replace(/，?已跳过$/, "");
       item.classList.add("zdl-log-job", status);
       item.title = `第 ${index}/${total} 个`;
       const body = document.createElement("div");
@@ -565,7 +652,7 @@ export const Core = {
       meta.textContent = [company, salary, address].filter(Boolean).join(" · ");
       line.append(name, meta);
       body.appendChild(line);
-      if (reason && reason !== "匹配 ") {
+      if (reason) {
         const desc = document.createElement("div");
         desc.className = "zdl-log-desc";
         desc.innerHTML = rich(reason);
@@ -633,6 +720,16 @@ export async function toggleProcess() {
     }
     return;
   }
+  await runDelivery();
+}
+
+// 补投选中的岗位：items 为 SkippedJobs 里的记录
+export async function startRemedy(items) {
+  if (state.activeRun || !items.length) return;
+  await runDelivery({ remedy: items });
+}
+
+async function runDelivery({ remedy = null } = {}) {
   Delivery.sync();
   if (!state.account.id || state.account.needsReload || state.account.error) {
     showNotification(state.account.error || (state.account.needsReload
@@ -643,7 +740,7 @@ export async function toggleProcess() {
     showNotification("请先切换到「职位」页再启动", "error");
     return;
   }
-  if (!hasFilterRules()) {
+  if (!remedy && !hasFilterRules()) {
     const choice = await UI._confirm({
       title: "还没有设置筛选规则",
       message: "现在开始会对列表里的所有岗位发起沟通，包括销售、客服等不相关的岗位。建议先用求职向导生成一套基础规则。",
@@ -664,7 +761,7 @@ export async function toggleProcess() {
   }
   const run = {
     uid: state.account.id, id: Math.random().toString(36).slice(2), mark: "",
-    started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(),
+    started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(), remedy,
   };
   state.activeRun = run;
   Delivery.render();
@@ -685,7 +782,15 @@ export async function toggleProcess() {
       }
       Delivery.prepare(run);
       if (state.delivery.dailyCount >= Math.min(state.targetCount, CONFIG.DAILY_LIMIT)) {
-        Core.log(`当前账号今日已投递 ${state.delivery.dailyCount} 次，已达今日目标或上限`);
+        Core.log(`当前账号今日已投递 ${state.delivery.dailyCount} 次，已达今日目标或上限${remedy ? "，无法补投" : ""}`);
+        return;
+      }
+      if (remedy) {
+        run.started = true;
+        state.isRunning = true;
+        Delivery.render();
+        Core.log(`开始补投选中的 ${remedy.length} 个岗位，跳过细筛直接沟通`);
+        await Core.processRemedy(run);
         return;
       }
       if (!Core.checkPageBeforeStart()) return;

@@ -17,8 +17,7 @@
     ],
     "jobTypeFilter": {
       "types": [
-        "social",
-        "open"
+        "social"
       ],
       "years": [
         "y0_1",

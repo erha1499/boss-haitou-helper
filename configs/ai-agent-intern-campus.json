@@ -18,8 +18,7 @@
     "jobTypeFilter": {
       "types": [
         "intern",
-        "campus",
-        "open"
+        "campus"
       ],
       "years": [
         "y0_1",

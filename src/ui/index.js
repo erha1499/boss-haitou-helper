@@ -5,6 +5,7 @@ import { ConfigShareMethods } from "./config-share.js";
 import { ConfirmMethods } from "./confirm.js";
 import { HistoryMethods } from "./history.js";
 import { PanelMethods, minimizePanel } from "./panel.js";
+import { RemedyMethods } from "./remedy.js";
 import { SettingsMethods } from "./settings.js";
 import { TutorialMethods } from "./tutorial.js";
 import { WizardMethods } from "./wizard-dialog.js";
@@ -33,6 +34,7 @@ export const UI = {
       if (elements.panel && elements.panel.contains(e.target)) return;
       if (elements.miniIcon && elements.miniIcon.contains(e.target)) return;
       if (document.getElementById("zdl-history-panel")?.contains(e.target)) return;
+      if (document.getElementById("zdl-remedy-panel")?.contains(e.target)) return;
       minimizePanel();
     });
     window.addEventListener("keydown", (e) => {
@@ -53,4 +55,4 @@ export const UI = {
   },
 };
 
-Object.assign(UI, ConfirmMethods, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);
+Object.assign(UI, RemedyMethods, ConfirmMethods, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);

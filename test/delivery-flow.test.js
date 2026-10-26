@@ -208,3 +208,101 @@ test("投递中页面切到后台时提醒一次会变慢", async () => {
   }
 });
 
+
+// 打开“可补投”面板，勾选指定岗位并补投，等补投结束
+async function remedy(page, titles) {
+  page.document.querySelector(".zdl-remedy-btn").click();
+  const panel = page.document.querySelector("#zdl-remedy-panel");
+  for (const row of panel.querySelectorAll(".zdl-remedy-row")) {
+    if (titles.includes(row.querySelector(".zdl-hist-name").textContent)) {
+      const box = row.querySelector("input");
+      box.checked = true;
+      box.dispatchEvent(new page.window.Event("change"));
+    }
+  }
+  const before = page.logs().length;
+  [...panel.querySelectorAll("button")].find((b) => /补投选中/.test(b.textContent)).click();
+  const deadline = Date.now() + 20000;
+  while (!page.logs().slice(before).some((line) => /本次补投成功/.test(line)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await page.idle();
+  return page.logs().slice(before);
+}
+
+test("被细筛误跳过的岗位可以在“可补投”里补投", async () => {
+  const jobs = [job(1), job(2, { desc: "本岗位不接受实习生" }), job(3)];
+  const page = await openFakeBoss({ jobs, storage: { detailBlockedTags: ["不接受实习"] } });
+  try {
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job1", "job3"]);
+    assert.ok(hasLog(lines, /可补投复查/), lines.join("\n"));
+    const btn = page.document.querySelector(".zdl-remedy-btn");
+    assert.equal(btn.hidden, false);
+    assert.equal(btn.textContent, "可补投 1");
+
+    const remedyLines = await remedy(page, ["Java后端开发2"]);
+    assert.deepEqual(page.chats, ["job1", "job3", "job2"]);
+    assert.equal(page.stats().dailyCount, 3);
+    assert.ok(hasLog(remedyLines, /补投已投递$/), remedyLines.join("\n"));
+    assert.ok(hasLog(remedyLines, /本次补投成功 1 个，共选了 1 个/), remedyLines.join("\n"));
+    assert.equal(btn.hidden, true, "补投后应从列表移除");
+    assert.ok(page.contacted().includes("job2"));
+  } finally {
+    page.close();
+  }
+});
+
+test("补投受今日目标限制：投满后不能补投，调高目标后可以", async () => {
+  const jobs = [job(1, { desc: "本岗位不接受实习生" }), job(2), job(3)];
+  const page = await openFakeBoss({ jobs, storage: { detailBlockedTags: ["不接受实习"], zdlTargetCount: "1" } });
+  try {
+    await page.run();
+    assert.deepEqual(page.chats, ["job2"]);
+    page.document.querySelector(".zdl-remedy-btn").click();
+    const deliverBtn = () => [...page.document.querySelectorAll("#zdl-remedy-panel button")].find((b) => /补投|今日目标/.test(b.textContent));
+    assert.equal(deliverBtn().disabled, true);
+    assert.match(deliverBtn().textContent, /已达今日目标/);
+    page.document.querySelector("#zdl-remedy-panel #zdl-hist-close").click();
+
+    const target = page.document.querySelector(".zdl-target-input");
+    target.value = "2";
+    target.dispatchEvent(new page.window.Event("change"));
+    await remedy(page, ["Java后端开发1"]);
+    assert.deepEqual(page.chats, ["job2", "job1"]);
+    assert.equal(page.stats().dailyCount, 2);
+  } finally {
+    page.close();
+  }
+});
+
+test("不在当前页的岗位不能勾选，只给打开岗位页的链接", async () => {
+  const jobs = [job(1), job(2, { desc: "本岗位不接受实习生" })];
+  const page = await openFakeBoss({ jobs, storage: { detailBlockedTags: ["不接受实习"] } });
+  try {
+    await page.run();
+    page.document.querySelector('li.job-card-box[data-id="job2"]').remove();
+    page.document.querySelector(".zdl-remedy-btn").click();
+    const row = page.document.querySelector("#zdl-remedy-panel .zdl-remedy-row");
+    assert.equal(row.querySelector("input").disabled, true);
+    assert.match(row.querySelector("a.zdl-remedy-action").href, /\/job_detail\/job2\.html$/);
+  } finally {
+    page.close();
+  }
+});
+
+test("详情加载超时的岗位也能补投", async () => {
+  const page = await openFakeBoss({ jobs: [1, 2, 3].map((i) => job(i)), storage: { includeTags: ["java"] }, detailBroken: true });
+  try {
+    await page.run();
+    const btn = page.document.querySelector(".zdl-remedy-btn");
+    assert.equal(btn.textContent, "可补投 3");
+    btn.click();
+    const rows = [...page.document.querySelectorAll("#zdl-remedy-panel .zdl-remedy-row")];
+    assert.equal(rows.length, 3);
+    assert.ok(rows.every((row) => row.querySelector(".zdl-remedy-reason").textContent === "详情加载超时"));
+    assert.ok(rows.every((row) => !row.querySelector("input").disabled));
+  } finally {
+    page.close();
+  }
+});

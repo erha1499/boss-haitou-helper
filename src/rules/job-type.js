@@ -1,13 +1,15 @@
 // ---------- 岗位类型与经验 ----------
 // BOSS 的经验标签只有“在校生/应届生/经验不限/1年以内/1-3年/…”，没有“实习”，
 // 所以综合卡片标签、职位名和职位描述来判断。
-export const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"], ["open", "经验不限/未标明"]];
+// 可选的岗位类型。没标类型（含“经验不限”）的岗位不在这里选：它们总会收集，打开详情后按职位描述再判断。
+export const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"]];
 export const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
 export const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
 export const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
 // 日志里显示的具体类型名（“经验不限”和“未标明”在筛选上是同一档，显示时区分开）
 export const JOB_SIGNAL_LABEL = { intern: "实习", campus: "校招/应届", social: "社招", open: "经验不限" };
-export const LEGACY_JOB_TYPES = { any: "open", unknown: "open" };
+// 旧配置里的“经验不限/未标明”（open、any、unknown）现在不用选，读取时丢掉
+export const LEGACY_JOB_TYPES = { any: "open", unknown: "open", open: "open" };
 
 export function normalizeJobTypeFilter(value) {
   const pick = (list, all, legacy = {}) => {
@@ -155,7 +157,9 @@ export const isJobTypeFilterActive = (filter) => filter.types.length < JOB_TYPES
 export function jobTypeMatches(result, { types, years }) {
   if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);
   if (result.kind === "soft") {
-    return result.types.some((t) => (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
+    return result.types.some((t) => t === "open"
+      || (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
   }
-  return types.includes("open");
+  // 没标类型、描述里也看不出来的岗位照常投，不因为缺标签被过滤
+  return true;
 }

@@ -97,6 +97,7 @@ export const elements = {
   emptyRulesHint: null,
   runStatusEl: null,
   logTabs: null,
+  remedyBtn: null,
 };
 
 export function saveLogEntries() {

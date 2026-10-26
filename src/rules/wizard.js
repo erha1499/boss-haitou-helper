@@ -35,7 +35,7 @@ export const WIZARD_HR = "hr*|招聘|人事";
 export const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
 export const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
 export const defaultWizardAnswers = () => ({
-  identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
+  identities: [], maxYears: "3", directions: [], stacks: [],
   minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
 });
 
@@ -54,7 +54,6 @@ export function generateWizardConfig(answers) {
     .map((d) => d.signature);
   if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
   const types = [...a.identities];
-  if (a.includeOpen) types.push("open");
   const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
   const min = String(parseInt(a.minSalary, 10) || "");
   return {

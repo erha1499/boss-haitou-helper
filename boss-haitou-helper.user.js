@@ -215,13 +215,15 @@
   // ---------- 岗位类型与经验 ----------
   // BOSS 的经验标签只有“在校生/应届生/经验不限/1年以内/1-3年/…”，没有“实习”，
   // 所以综合卡片标签、职位名和职位描述来判断。
-  const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"], ["open", "经验不限/未标明"]];
+  // 可选的岗位类型。没标类型（含“经验不限”）的岗位不在这里选：它们总会收集，打开详情后按职位描述再判断。
+  const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"]];
   const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
   const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
   const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
   // 日志里显示的具体类型名（“经验不限”和“未标明”在筛选上是同一档，显示时区分开）
   const JOB_SIGNAL_LABEL = { intern: "实习", campus: "校招/应届", social: "社招", open: "经验不限" };
-  const LEGACY_JOB_TYPES = { any: "open", unknown: "open" };
+  // 旧配置里的“经验不限/未标明”（open、any、unknown）现在不用选，读取时丢掉
+  const LEGACY_JOB_TYPES = { any: "open", unknown: "open", open: "open" };
 
   function normalizeJobTypeFilter(value) {
     const pick = (list, all, legacy = {}) => {
@@ -369,9 +371,11 @@
   function jobTypeMatches(result, { types, years }) {
     if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);
     if (result.kind === "soft") {
-      return result.types.some((t) => (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
+      return result.types.some((t) => t === "open"
+        || (t === "social" ? types.includes("social") && years.includes("none") : types.includes(t)));
     }
-    return types.includes("open");
+    // 没标类型、描述里也看不出来的岗位照常投，不因为缺标签被过滤
+    return true;
   }
 
   const state = {
@@ -470,6 +474,7 @@
     emptyRulesHint: null,
     runStatusEl: null,
     logTabs: null,
+    remedyBtn: null,
   };
 
   function saveLogEntries() {
@@ -1115,7 +1120,7 @@
   const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
   const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
   const defaultWizardAnswers = () => ({
-    identities: [], includeOpen: true, maxYears: "3", directions: [], stacks: [],
+    identities: [], maxYears: "3", directions: [], stacks: [],
     minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
   });
 
@@ -1134,7 +1139,6 @@
       .map((d) => d.signature);
     if (a.excludeNonTech) coarseBlockedTags.push(WIZARD_NON_TECH);
     const types = [...a.identities];
-    if (a.includeOpen) types.push("open");
     const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
     const min = String(parseInt(a.minSalary, 10) || "");
     return {
@@ -1962,7 +1966,7 @@
         wrap.appendChild(row);
         return wrap;
       };
-      const typesSection = make("岗位类型", "取消勾选的类型不投", JOB_TYPES, "types");
+      const typesSection = make("岗位类型", "取消勾选的类型不投；没标类型的岗位照常收集，打开详情后按描述再判断", JOB_TYPES, "types");
       const rulesLink = document.createElement("a");
       rulesLink.className = "zdl-filter-link";
       rulesLink.href = `${REPO_URL}#岗位类型怎么判断`;
@@ -2731,7 +2735,14 @@
       elements.logTabs = tabs;
       const logTools = document.createElement("div");
       logTools.className = "zdl-log-tools";
-      logTools.append(tabs, clearLog);
+      // 有被细筛跳过的岗位时显示，点开复查、补投
+      elements.remedyBtn = document.createElement("button");
+      elements.remedyBtn.type = "button";
+      elements.remedyBtn.className = "zdl-remedy-btn";
+      elements.remedyBtn.hidden = true;
+      elements.remedyBtn.title = "查看今天被细筛跳过的岗位，误跳过的可以补投";
+      elements.remedyBtn.addEventListener("click", () => this._showRemedyPanel());
+      logTools.append(elements.remedyBtn, tabs, clearLog);
       logHeading.append(logTitle, logTools);
       logSection.append(logHeading, elements.log);
       const resizeHandle = document.createElement("div");
@@ -2937,6 +2948,7 @@
         tab.classList.toggle("active", tab.dataset.filter === filter);
         tab.setAttribute("aria-pressed", String(tab.dataset.filter === filter));
       });
+      this._refreshRemedyButton();
       if (filter !== "all" && !counts[filter]) log.dataset.empty = filter === "ok" ? "还没有投递记录" : "还没有跳过的岗位";
       else delete log.dataset.empty;
     },
@@ -3096,6 +3108,207 @@
       });
 
       document.body.appendChild(elements.miniIcon);
+    },
+  };
+
+  // 细筛时被规则跳过的岗位：记下来让用户复查，误跳过的可以补投。
+  // 按账号保存当天的记录，换一天自动清空；同一个岗位只留最新一条。
+  const SKIPPED_JOBS_KEY = "zdlSkippedJobsV1";
+  const SKIPPED_JOBS_LIMIT = 100;
+
+  const today = () => new Date().toLocaleDateString();
+
+  const SkippedJobs = {
+    _read() {
+      try {
+        const data = JSON.parse(localStorage.getItem(SKIPPED_JOBS_KEY) || "{}");
+        return data && typeof data === "object" && !Array.isArray(data) ? data : {};
+      } catch (error) {
+        return {};
+      }
+    },
+
+    _write(data) {
+      try { localStorage.setItem(SKIPPED_JOBS_KEY, JSON.stringify(data)); } catch (error) {}
+    },
+
+    // 当天的记录，最新的在前
+    list(uid) {
+      const record = this._read()[uid];
+      return record?.date === today() && Array.isArray(record.items) ? record.items : [];
+    },
+
+    // item：{ jobId, title, company, salary, address, reason }
+    add(uid, item) {
+      if (!uid || !item.jobId) return;
+      const data = this._read();
+      const items = this.list(uid).filter((saved) => saved.jobId !== item.jobId);
+      data[uid] = { date: today(), items: [{ ...item, at: Date.now() }, ...items].slice(0, SKIPPED_JOBS_LIMIT) };
+      this._write(data);
+    },
+
+    remove(uid, jobIds) {
+      if (!uid || !jobIds.length) return;
+      const data = this._read();
+      data[uid] = { date: today(), items: this.list(uid).filter((saved) => !jobIds.includes(saved.jobId)) };
+      this._write(data);
+    },
+  };
+
+  // “可补投”面板：列出今天被细筛跳过的岗位和原因，勾选误跳过的直接补投。
+  const RemedyMethods = {
+    // 日志顶部“可补投 N”按钮：有记录时才显示
+    _refreshRemedyButton() {
+      const btn = elements.remedyBtn;
+      if (!btn) return;
+      const count = state.account.id ? SkippedJobs.list(state.account.id).length : 0;
+      btn.hidden = !count;
+      btn.textContent = `可补投 ${count}`;
+    },
+
+    _showRemedyPanel() {
+      this._hideSettingsPanel();
+      this._hideAccountsPanel();
+      document.getElementById("zdl-history-panel")?.remove();
+      const existing = document.getElementById("zdl-remedy-panel");
+      if (existing) { existing.remove(); return; }
+
+      const uid = state.account.id;
+      const panel = document.createElement("div");
+      panel.id = "zdl-remedy-panel";
+      panel.className = "zdl-history-panel zdl-remedy-panel";
+      panel.setAttribute("role", "dialog");
+      panel.setAttribute("aria-label", "可补投的岗位");
+
+      const header = document.createElement("div");
+      header.className = "zdl-hist-header";
+      const title = Object.assign(document.createElement("h4"), { textContent: "可补投的岗位" });
+      const closeBtn = document.createElement("button");
+      closeBtn.id = "zdl-hist-close";
+      closeBtn.type = "button";
+      closeBtn.innerHTML = UI_ICONS.close;
+      closeBtn.setAttribute("aria-label", "关闭可补投的岗位");
+      header.append(title, closeBtn);
+
+      const hint = Object.assign(document.createElement("p"), {
+        className: "zdl-remedy-hint",
+        textContent: "今天被细筛跳过的岗位。勾选误跳过的点「补投选中」：跳过细筛直接沟通，其余和正常投递一样，计入今日次数，到今日目标就停。",
+      });
+      const listWrap = document.createElement("div");
+      listWrap.className = "zdl-hist-list";
+
+      const footer = document.createElement("div");
+      footer.className = "zdl-remedy-footer";
+      const selectAll = this._createTextButton("全选", () => {
+        const boxes = [...listWrap.querySelectorAll("input:not(:disabled)")];
+        const check = boxes.some((box) => !box.checked);
+        boxes.forEach((box) => { box.checked = check; });
+        updateFooter();
+      });
+      const removeBtn = this._createTextButton("移出列表", () => {
+        SkippedJobs.remove(uid, selectedIds());
+        render();
+        this._refreshRemedyButton();
+      });
+      const deliverBtn = this._createTextButton("补投选中", () => {
+        const ids = selectedIds();
+        const items = SkippedJobs.list(uid).filter((item) => ids.includes(item.jobId));
+        close();
+        startRemedy(items);
+      });
+      [selectAll, removeBtn].forEach((btn) => { btn.className = "zdl-config-btn"; });
+      deliverBtn.className = "zdl-config-btn zdl-config-primary";
+      footer.append(selectAll, removeBtn, deliverBtn);
+
+      const selectedIds = () => [...listWrap.querySelectorAll("input:checked")].map((box) => box.value);
+      const updateFooter = () => {
+        const n = selectedIds().length;
+        const busy = !!state.activeRun;
+        const full = state.delivery.dailyCount >= Math.min(state.targetCount, CONFIG.DAILY_LIMIT);
+        deliverBtn.textContent = busy ? "投递中，稍后再补投" : full ? "已达今日目标，调高目标后再补投"
+          : n ? `补投选中（${n}）` : "补投选中";
+        deliverBtn.disabled = busy || full || !n;
+        removeBtn.disabled = !n;
+        selectAll.disabled = !listWrap.querySelector("input:not(:disabled)");
+      };
+
+      const render = () => {
+        listWrap.replaceChildren();
+        const items = uid ? SkippedJobs.list(uid) : [];
+        if (!items.length) {
+          listWrap.appendChild(Object.assign(document.createElement("div"), { className: "zdl-hist-empty", textContent: "今天还没有被跳过的岗位" }));
+        }
+        items.forEach((item) => {
+          const card = findCardById(item.jobId);
+          const row = document.createElement("label");
+          row.className = "zdl-hist-row zdl-remedy-row" + (card ? "" : " missing");
+          const box = Object.assign(document.createElement("input"), { type: "checkbox", value: item.jobId, disabled: !card });
+          box.addEventListener("change", updateFooter);
+          const names = document.createElement("div");
+          names.className = "zdl-hist-names";
+          const name = Object.assign(document.createElement("span"), { className: "zdl-hist-name", textContent: item.title });
+          const meta = Object.assign(document.createElement("span"), {
+            className: "zdl-hist-jobs", textContent: [item.company, item.salary].filter(Boolean).join(" · "),
+          });
+          const reason = Object.assign(document.createElement("span"), { className: "zdl-remedy-reason", textContent: item.reason, title: item.reason });
+          names.append(name, meta, reason);
+          let action;
+          if (card) {
+            action = this._createTextButton("定位", (event) => {
+              event.preventDefault();
+              CoarsePreview.locate(card);
+            });
+            action.title = "在页面上定位这个岗位";
+          } else {
+            // 刷新或换了搜索后卡片不在当前页了，只能打开岗位页手动沟通
+            action = Object.assign(document.createElement("a"), {
+              href: `https://www.zhipin.com/job_detail/${item.jobId}.html`, target: "_blank", rel: "noopener", textContent: "打开",
+              title: "不在当前页，打开岗位页手动沟通",
+            });
+          }
+          action.className = "zdl-remedy-action";
+          row.append(box, names, action);
+          listWrap.appendChild(row);
+        });
+        updateFooter();
+      };
+
+      const close = () => {
+        panel.remove();
+        document.removeEventListener("click", closeOnOutside, true);
+        document.removeEventListener("keydown", onEsc, true);
+      };
+      const closeOnOutside = (e) => {
+        if (!e.isTrusted || panel.contains(e.target) || e.target === elements.remedyBtn) return;
+        if (document.getElementById("boss-pro-panel")?.contains(e.target)) return;
+        close();
+      };
+      const onEsc = (e) => { if (e.key === "Escape") close(); };
+      closeBtn.addEventListener("click", (e) => { e.stopPropagation(); close(); });
+      setTimeout(() => {
+        document.addEventListener("click", closeOnOutside, true);
+        document.addEventListener("keydown", onEsc, true);
+      }, 0);
+
+      panel.append(header, hint, listWrap, footer);
+      render();
+
+      // 放在主面板左边，放不下就放右边
+      const mainPanel = document.getElementById("boss-pro-panel");
+      if (mainPanel && mainPanel.style.display !== "none") {
+        const rect = mainPanel.getBoundingClientRect();
+        const width = Math.min(380, window.innerWidth - 24);
+        let left = rect.left - width - 12;
+        if (left < 12) left = rect.right + 12;
+        left = Math.max(12, Math.min(left, window.innerWidth - width - 12));
+        const top = Math.max(12, Math.min(rect.top, window.innerHeight - 120));
+        Object.assign(panel.style, {
+          top: `${top}px`, left: `${left}px`, right: "auto", width: `${width}px`,
+          maxHeight: `${Math.max(160, Math.min(560, window.innerHeight - top - 12))}px`,
+        });
+      }
+      document.body.appendChild(panel);
+      this._makeDraggable(panel);
     },
   };
 
@@ -3424,7 +3637,7 @@
       yearsSelect.value = answers.maxYears;
       yearsSelect.addEventListener("change", () => { answers.maxYears = yearsSelect.value; onChange(); });
       years.append("社招接受经验要求", yearsSelect);
-      const step1 = step("1", "你在找什么", "可多选", identityRow, years, checkbox("也投没写明类型的岗位", "includeOpen"));
+      const step1 = step("1", "你在找什么", "可多选；没标类型的岗位会照常收集，打开详情后再判断", identityRow, years);
       // ② 方向
       const step2 = step("2", "想做什么方向", "可多选，没选的方向会被排除",
         chips(WIZARD_DIRECTIONS.map((d) => [d.key, d.label]), (k) => answers.directions.includes(k), listToggle("directions")));
@@ -3572,6 +3785,7 @@
         if (elements.panel && elements.panel.contains(e.target)) return;
         if (elements.miniIcon && elements.miniIcon.contains(e.target)) return;
         if (document.getElementById("zdl-history-panel")?.contains(e.target)) return;
+        if (document.getElementById("zdl-remedy-panel")?.contains(e.target)) return;
         minimizePanel();
       });
       window.addEventListener("keydown", (e) => {
@@ -3592,7 +3806,7 @@
     },
   };
 
-  Object.assign(UI, ConfirmMethods, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);
+  Object.assign(UI, RemedyMethods, ConfirmMethods, PanelMethods, AccountsMethods, TutorialMethods, SettingsMethods, ConfigShareMethods, WizardMethods, HistoryMethods);
 
   const DELIVERY_STATS_KEY = "zdlDeliveryStatsV1";
   const CURRENT_ACCOUNT_KEY = "zdlAccountPageV1:";
@@ -3781,6 +3995,7 @@
       }
       RunStatus.render();
       if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
+      UI._refreshRemedyButton?.();
       if (elements.configImportBtn) UI._updateConfigControls();
     },
 
@@ -3857,6 +4072,11 @@
     for (let i = 0; i < text.length; i++) hash = ((hash * 33) ^ text.charCodeAt(i)) >>> 0;
     return hash.toString(36);
   }
+
+  // 按岗位 id 在当前页找卡片（补投、定位时用）
+  const findCardById = (jobId) => (jobId
+    ? Array.from(document.querySelectorAll(BOSS.jobCard)).find((card) => ContactedJobs.idOf(card) === jobId) || null
+    : null);
 
   const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id;
 
@@ -4073,10 +4293,16 @@
       const cumulativeTotal = state.jobIndexOffset + state.jobList.length;
       const idx = state.jobIndexOffset + state.currentIndex + 1;
       const prefix = `第${idx}/${cumulativeTotal}个，[${item.address}][${item.company}][${item.job}][${item.salary}]`;
-      const skip = (message, key = message) => {
+      // remediable：被规则挡掉或加载超时的岗位记进“可补投”，误跳过的可以事后补投
+      const skip = (message, key = message, remediable = false) => {
         this.log(`${prefix}，${message}，已跳过`);
         run.skips[key] = (run.skips[key] || 0) + 1;
         state.currentIndex++;
+        if (remediable) {
+          SkippedJobs.add(run.uid, {
+            jobId: item.jobId, title: item.job, company: item.company, salary: item.salary, address: item.address, reason: message,
+          });
+        }
         RunStatus.render();
       };
       highlightCard(cardEl);
@@ -4087,7 +4313,7 @@
       if (!detailReady) {
         // 加载超时的岗位本次不再试，下次开始时重试
         cardEl.dataset.zdlTimeout = run.id;
-        skip("详情加载超时");
+        skip("详情加载超时", "详情加载超时", true);
         this.stopIfBroken(run, "detail");
         return;
       }
@@ -4102,7 +4328,7 @@
         activeTime = findInDetail(BOSS.recruiterActive)?.textContent?.trim() || "未知";
       }
       if (activeStatusFilter.length > 0 && !activeStatusFilter.includes(activeTime)) {
-        return skip(`招聘者"${activeTime}"`, "招聘者活跃状态不符");
+        return skip(`招聘者"${activeTime}"`, "招聘者活跃状态不符", true);
       }
 
       let matchReason = "";
@@ -4120,7 +4346,7 @@
           salary: item.salary,
         });
         if (!jobTypeAccepted(jobType)) {
-          return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`);
+          return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`, true);
         }
         matchReason = `类型"${jobType.label}"`;
       }
@@ -4135,7 +4361,7 @@
 
         // 排除词：只匹配职位描述
         const hitBlocked = state.detailBlockedTags.find((kw) => matchKeyword(descText, kw));
-        if (hitBlocked) return skip(`命中排除词"${hitBlocked}"${quote(descRaw, hitBlocked)}`, `详情排除"${hitBlocked}"`);
+        if (hitBlocked) return skip(`命中排除词"${hitBlocked}"${quote(descRaw, hitBlocked)}`, `详情排除"${hitBlocked}"`, true);
 
         // 必须/任一：匹配职位描述、职位标签和职位名，只在详情区域内取，避免左侧列表干扰
         if (state.detailRequiredTags.length || state.detailOptionalTags.length) {
@@ -4147,12 +4373,12 @@
           const wideText = wideRaw.toLowerCase();
 
           const missedRequired = state.detailRequiredTags.find((kw) => !matchKeyword(wideText, kw));
-          if (missedRequired) return skip(`缺少必须词"${missedRequired}"`, `缺少"${missedRequired}"`);
+          if (missedRequired) return skip(`缺少必须词"${missedRequired}"`, `缺少"${missedRequired}"`, true);
           if (state.detailRequiredTags.length) matchReason = `必须"${state.detailRequiredTags.join("、")}"`;
 
           if (state.detailOptionalTags.length) {
             const matchedOptional = state.detailOptionalTags.filter((kw) => matchKeyword(wideText, kw));
-            if (!matchedOptional.length) return skip("详情没有命中任一关键词");
+            if (!matchedOptional.length) return skip("详情没有命中任一关键词", "详情没有命中任一关键词", true);
             matchReason = (matchReason ? matchReason + "；" : "") + `任一"${matchedOptional.join("、")}"${quote(wideRaw, matchedOptional[0])}`;
           }
         }
@@ -4164,56 +4390,122 @@
         const bossRaw = (findInDetail(BOSS.recruiterTitle)?.textContent || "").replace(/\s+/g, " ").trim();
         if (bossRaw) {
           const hitRecruiter = state.recruiterIncludeTags.find((kw) => matchKeyword(bossRaw.toLowerCase(), kw));
-          if (!hitRecruiter) return skip(`招聘者"${bossRaw}"不在只投范围`, "招聘者职位不符");
+          if (!hitRecruiter) return skip(`招聘者"${bossRaw}"不在只投范围`, "招聘者职位不符", true);
           matchReason = (matchReason ? matchReason + "；" : "") + `招聘者"${bossRaw}"`;
         } else {
           matchReason = (matchReason ? matchReason + "；" : "") + "未读到招聘者职位，未做招聘者筛选";
         }
       }
 
-      const chatBtn = findInDetail(BOSS.chatButton);
-      const btnText = chatBtn?.textContent.trim() || "";
-      if (btnText !== BOSS.chatButtonNew) {
-        if (btnText === BOSS.chatButtonContacted) {
-          run.guard.ok("chat");
-          ContactedJobs.add(run.uid, item.jobId);
-          return skip("之前已沟通过", "已沟通过");
-        }
+      const result = await this.contact(run, item);
+      if (result === "contacted") return skip("之前已沟通过", "已沟通过");
+      if (result === "nobutton") {
         skip("没有沟通按钮");
         this.stopIfBroken(run, "chat");
         return;
       }
-      run.guard.ok("chat");
-
       state.currentIndex++;
-      if (!Delivery.isCurrent(run)) return;
-      if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) {
-        this.log(`${prefix}，已达今日目标 ${state.targetCount} 次，自动停止`);
-        stopProcess(run);
-        return;
+      this.logContactResult(run, result, prefix, `已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
+    },
+
+    // 在已打开的详情里点“立即沟通”，处理上限弹窗和投递成功弹窗。返回：
+    // delivered 投递成功 / contacted 之前沟通过 / nobutton 没有沟通按钮 / target 已达今日目标或上限 /
+    // limit 遇到 BOSS 150 次上限 / unconfirmed 点了但没确认成功 / stopped 投递已停止。
+    async contact(run, item) {
+      const chatBtn = findInDetail(BOSS.chatButton);
+      const btnText = chatBtn?.textContent.trim() || "";
+      if (btnText !== BOSS.chatButtonNew) {
+        if (btnText !== BOSS.chatButtonContacted) return "nobutton";
+        run.guard.ok("chat");
+        ContactedJobs.add(run.uid, item.jobId);
+        return "contacted";
       }
+      run.guard.ok("chat");
+      if (!Delivery.isCurrent(run)) return "stopped";
+      if (state.delivery.dailyCount >= Math.min(state.targetCount, CONFIG.DAILY_LIMIT)) return "target";
       chatBtn.click();
 
       // 检测 BOSS 限制弹窗（120 提醒 / 150 上限）
       const isLimitReached = await this.handleLimitDialogs(run);
-      if (!Delivery.isCurrent(run, true)) return;
-      if (isLimitReached) {
-        this.log(`${prefix}，BOSS限制：今日沟通已达150次上限，自动停止`);
-        stopProcess(run);
-        return;
-      }
+      if (!Delivery.isCurrent(run, true)) return "stopped";
+      if (isLimitReached) return "limit";
 
       const confirmed = await this.handleGreetingModal(item.company, item.logo, item.job, run);
       if (confirmed) {
         run.guard.ok("confirm");
         ContactedJobs.add(run.uid, item.jobId);
+        SkippedJobs.remove(run.uid, [item.jobId]);
         run.delivered++;
         RunStatus.render();
-        this.log(`${prefix}，已投递${matchReason ? `，匹配 ${matchReason}` : ""}`);
-      } else if (Delivery.isCurrent(run, true)) {
-        this.log(`${prefix}，未确认投递成功，未增加次数`);
-        this.stopIfBroken(run, "confirm");
+        return "delivered";
       }
+      return Delivery.isCurrent(run, true) ? "unconfirmed" : "stopped";
+    },
+
+    // 把 contact 的结果写进日志，需要停下来时停止投递。返回是否应继续处理下一个岗位。
+    logContactResult(run, result, prefix, deliveredText) {
+      if (result === "delivered") {
+        this.log(`${prefix}，${deliveredText}`);
+        return true;
+      }
+      if (result === "target") {
+        this.log(state.delivery.dailyCount >= CONFIG.DAILY_LIMIT
+          ? `${prefix}，今日已达每日上限 ${CONFIG.DAILY_LIMIT} 次，自动停止`
+          : `${prefix}，已达今日目标 ${state.targetCount} 次，自动停止`);
+        stopProcess(run);
+        return false;
+      }
+      if (result === "limit") {
+        this.log(`${prefix}，BOSS限制：今日沟通已达150次上限，自动停止`);
+        stopProcess(run);
+        return false;
+      }
+      if (result === "unconfirmed") {
+        this.log(`${prefix}，未确认投递成功，未增加次数`);
+        return !this.stopIfBroken(run, "confirm");
+      }
+      return false;
+    },
+
+    // 补投：用户在“可补投”里选中的岗位，按岗位 id 在当前页找到卡片，打开详情后跳过细筛直接沟通。
+    // 其余和正常投递一样：计入今日次数，到今日目标或每日上限就停。
+    async processRemedy(run) {
+      const items = run.remedy;
+      for (let i = 0; i < items.length; i++) {
+        if (!Delivery.isCurrent(run)) return;
+        const saved = items[i];
+        const prefix = `第${i + 1}/${items.length}个，[${saved.address}][${saved.company}][${saved.title}][${saved.salary}]`;
+        const card = findCardById(saved.jobId);
+        if (!card) {
+          this.log(`${prefix}，不在当前页，无法补投，已跳过`);
+          continue;
+        }
+        const info = readCardInfo(card);
+        const item = { el: card, jobId: saved.jobId, company: info.company || saved.company, logo: info.logo, job: info.title || saved.title };
+        highlightCard(card);
+        RunStatus.setActivity(`正在补投：${item.company} · ${item.job}`);
+        const ready = await this.openDetail(item, run);
+        if (!Delivery.isCurrent(run)) return;
+        if (!ready) {
+          this.log(`${prefix}，详情加载超时，已跳过`);
+          if (this.stopIfBroken(run, "detail")) return;
+          continue;
+        }
+        run.guard.ok("detail");
+        const result = await this.contact(run, item);
+        if (result === "contacted") {
+          SkippedJobs.remove(run.uid, [saved.jobId]);
+          this.log(`${prefix}，之前已沟通过，已跳过`);
+          continue;
+        }
+        if (result === "nobutton") {
+          this.log(`${prefix}，没有沟通按钮，已跳过`);
+          if (this.stopIfBroken(run, "chat")) return;
+          continue;
+        }
+        if (!this.logContactResult(run, result, prefix, "已投递，补投")) return;
+      }
+      if (Delivery.isCurrent(run)) stopProcess(run);
     },
 
     // 开始投递前检查职位列表能不能读出来，读不出关键信息时不启动。
@@ -4239,12 +4531,18 @@
 
     // 一次投递任务结束后汇总结果，方便看出哪条规则过严。
     logRunSummary(run) {
+      if (run.remedy) {
+        this.log(`本次补投成功 ${run.delivered} 个，共选了 ${run.remedy.length} 个`);
+        return;
+      }
       const skips = Object.entries(run.skips).sort((a, b) => b[1] - a[1]);
       const skipped = skips.reduce((sum, [, n]) => sum + n, 0);
       if (!run.delivered && !skipped) return;
       const top = skips.slice(0, 6).map(([key, n]) => `${key} ${n}`).join("、");
       const more = skips.length > 6 ? " 等" : "";
       this.log(`本次共投递 ${run.delivered} 个，详情页跳过 ${skipped} 个${top ? `（${top}${more}）` : ""}`);
+      const remediable = SkippedJobs.list(run.uid).length;
+      if (remediable) this.log(`提示：被细筛跳过的 ${remediable} 个岗位可以点日志上方的「可补投」复查，误跳过的可以补投`);
     },
 
     // 点开岗位并等右侧详情切换到这个岗位，避免用上一个岗位的详情做筛选。
@@ -4386,7 +4684,10 @@
       if (job) {
         const [, index, total, address, company, title, salary, rest] = job;
         const status = /已投递/.test(rest) ? "ok" : /已跳过/.test(rest) ? "skip" : "info";
-        const reason = rest.replace(/，?已跳过$/, "").replace(/^已投递(?:，匹配\s*)?/, status === "ok" ? "匹配 " : "");
+        // 已投递：“已投递，匹配 xx”显示“匹配 xx”，“已投递，补投…”显示“补投…”
+        const reason = status === "ok"
+          ? rest.replace(/^已投递，匹配\s*/, "匹配 ").replace(/^已投递，?/, "")
+          : rest.replace(/，?已跳过$/, "");
         item.classList.add("zdl-log-job", status);
         item.title = `第 ${index}/${total} 个`;
         const body = document.createElement("div");
@@ -4400,7 +4701,7 @@
         meta.textContent = [company, salary, address].filter(Boolean).join(" · ");
         line.append(name, meta);
         body.appendChild(line);
-        if (reason && reason !== "匹配 ") {
+        if (reason) {
           const desc = document.createElement("div");
           desc.className = "zdl-log-desc";
           desc.innerHTML = rich(reason);
@@ -4468,6 +4769,16 @@
       }
       return;
     }
+    await runDelivery();
+  }
+
+  // 补投选中的岗位：items 为 SkippedJobs 里的记录
+  async function startRemedy(items) {
+    if (state.activeRun || !items.length) return;
+    await runDelivery({ remedy: items });
+  }
+
+  async function runDelivery({ remedy = null } = {}) {
     Delivery.sync();
     if (!state.account.id || state.account.needsReload || state.account.error) {
       showNotification(state.account.error || (state.account.needsReload
@@ -4478,7 +4789,7 @@
       showNotification("请先切换到「职位」页再启动", "error");
       return;
     }
-    if (!hasFilterRules()) {
+    if (!remedy && !hasFilterRules()) {
       const choice = await UI._confirm({
         title: "还没有设置筛选规则",
         message: "现在开始会对列表里的所有岗位发起沟通，包括销售、客服等不相关的岗位。建议先用求职向导生成一套基础规则。",
@@ -4499,7 +4810,7 @@
     }
     const run = {
       uid: state.account.id, id: Math.random().toString(36).slice(2), mark: "",
-      started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(),
+      started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(), remedy,
     };
     state.activeRun = run;
     Delivery.render();
@@ -4520,7 +4831,15 @@
         }
         Delivery.prepare(run);
         if (state.delivery.dailyCount >= Math.min(state.targetCount, CONFIG.DAILY_LIMIT)) {
-          Core.log(`当前账号今日已投递 ${state.delivery.dailyCount} 次，已达今日目标或上限`);
+          Core.log(`当前账号今日已投递 ${state.delivery.dailyCount} 次，已达今日目标或上限${remedy ? "，无法补投" : ""}`);
+          return;
+        }
+        if (remedy) {
+          run.started = true;
+          state.isRunning = true;
+          Delivery.render();
+          Core.log(`开始补投选中的 ${remedy.length} 个岗位，跳过细筛直接沟通`);
+          await Core.processRemedy(run);
           return;
         }
         if (!Core.checkPageBeforeStart()) return;
@@ -4882,6 +5201,17 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-log-tab.active{background:var(--zdl-accent);color:var(--zdl-primary);font-weight:500}
 .zdl-log[data-filter="ok"] .zdl-log-item:not(.zdl-log-job.ok),.zdl-log[data-filter="skip"] .zdl-log-item:not(.zdl-log-job.skip){display:none}
 .zdl-log[data-empty]::before{content:attr(data-empty);display:block;padding:16px 0;text-align:center;color:var(--zdl-text-4)}
+.zdl-remedy-btn{padding:1px 8px;border:1px solid #f3d9b0;border-radius:6px;background:#fff8ec;color:#b45309;font:inherit;font-weight:500;line-height:1.6;cursor:pointer;white-space:nowrap}
+.zdl-remedy-btn:hover{background:#fdeed4}
+.zdl-remedy-btn[hidden]{display:none}
+.zdl-remedy-hint{margin:10px 0 4px;font-size:12px;line-height:1.6;color:var(--zdl-text-3)}
+.zdl-remedy-row{gap:10px;cursor:pointer;align-items:flex-start}
+.zdl-remedy-row input{margin:3px 0 0;flex-shrink:0;cursor:pointer}
+.zdl-remedy-row.missing{cursor:default;opacity:.6}
+.zdl-remedy-reason{font-size:11px;color:#b45309;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.zdl-remedy-action{flex-shrink:0;padding:2px 8px;border:1px solid var(--zdl-border);border-radius:6px;background:#fff;color:var(--zdl-primary);font-size:11px;line-height:1.6;cursor:pointer;text-decoration:none;box-shadow:none}
+.zdl-remedy-action:hover{background:var(--zdl-accent)}
+.zdl-remedy-footer{display:flex;justify-content:flex-end;gap:8px;flex-shrink:0;padding-top:12px;border-top:1px solid var(--zdl-border)}
 .zdl-log-clear{padding:1px 7px;border:0;border-radius:5px;background:transparent;color:var(--zdl-text-4);font:inherit;font-weight:400;cursor:pointer}
 .zdl-log-clear:hover{background:#fff;color:var(--zdl-primary)}
 .zdl-filter-group{margin-bottom:10px;border:1px solid var(--zdl-border);border-radius:9px;overflow:hidden;background:#fff}

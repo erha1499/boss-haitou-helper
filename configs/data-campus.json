@@ -17,8 +17,7 @@
     ],
     "jobTypeFilter": {
       "types": [
-        "campus",
-        "open"
+        "campus"
       ],
       "years": [
         "y0_1",

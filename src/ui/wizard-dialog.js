@@ -87,7 +87,7 @@ export const WizardMethods = {
     yearsSelect.value = answers.maxYears;
     yearsSelect.addEventListener("change", () => { answers.maxYears = yearsSelect.value; onChange(); });
     years.append("社招接受经验要求", yearsSelect);
-    const step1 = step("1", "你在找什么", "可多选", identityRow, years, checkbox("也投没写明类型的岗位", "includeOpen"));
+    const step1 = step("1", "你在找什么", "可多选；没标类型的岗位会照常收集，打开详情后再判断", identityRow, years);
     // ② 方向
     const step2 = step("2", "想做什么方向", "可多选，没选的方向会被排除",
       chips(WIZARD_DIRECTIONS.map((d) => [d.key, d.label]), (k) => answers.directions.includes(k), listToggle("directions")));

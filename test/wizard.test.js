@@ -38,7 +38,7 @@ test("只选后端时，排除词挡掉前端岗，不挡后端岗", () => {
 
 test("岗位类型、薪资、招聘者", () => {
   const config = generateWizardConfig({ identities: ["intern"], minSalary: "8", onlyHr: true, recentActive: false });
-  assert.deepEqual(config.jobTypeFilter.types, ["intern", "open"]);
+  assert.deepEqual(config.jobTypeFilter.types, ["intern"]);
   assert.deepEqual(config.salaryFilter, { type: "atLeast", min: "8", max: "", negotiable: true });
   assert.deepEqual(config.recruiterIncludeTags, ["hr*|招聘|人事"]);
   assert.deepEqual(config.recruiterActivityStatus, RECRUITER_STATUS_OPTIONS);

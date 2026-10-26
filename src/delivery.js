@@ -192,6 +192,7 @@ export const Delivery = {
     }
     RunStatus.render();
     if (elements.accountsPanel && !elements.accountsPanel.hidden) UI._renderAccountsPanel();
+    UI._refreshRemedyButton?.();
     if (elements.configImportBtn) UI._updateConfigControls();
   },
 

@@ -296,7 +296,7 @@ export const SettingsMethods = {
       wrap.appendChild(row);
       return wrap;
     };
-    const typesSection = make("岗位类型", "取消勾选的类型不投", JOB_TYPES, "types");
+    const typesSection = make("岗位类型", "取消勾选的类型不投；没标类型的岗位照常收集，打开详情后按描述再判断", JOB_TYPES, "types");
     const rulesLink = document.createElement("a");
     rulesLink.className = "zdl-filter-link";
     rulesLink.href = `${REPO_URL}#岗位类型怎么判断`;
