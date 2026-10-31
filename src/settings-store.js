@@ -1,5 +1,6 @@
 import { CONFIG, RECRUITER_STATUS_OPTIONS } from "./config.js";
-import { JOB_TYPES, JOB_TYPE_LABEL, JOB_YEARS, JOB_YEARS_LABEL, LEGACY_JOB_TYPES, normalizeJobTypeFilter } from "./rules/job-type.js";
+import { JOB_DEGREE_LABEL, JOB_TYPES, JOB_TYPE_LABEL, JOB_YEARS, JOB_YEARS_LABEL, LEGACY_JOB_TYPES, activeDegree, normalizeJobTypeFilter } from "./rules/job-type.js";
+import { SALARY_BANDS, formatSalaryBand, isSalaryBandActive, normalizeSalaryFilter } from "./rules/salary.js";
 import { wizardKeywordName } from "./rules/wizard.js";
 import { elements, state } from "./state.js";
 import { UI } from "./ui/index.js";
@@ -50,9 +51,9 @@ export let configUndoInvalidated = false;
 export function getCurrentConfig() {
   const config = {
     targetCount: state.targetCount,
-    salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max, negotiable: state.salaryFilter.negotiable !== false },
+    salaryFilter: normalizeSalaryFilter(state.salaryFilter),
     recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
-    jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years] },
+    jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years], degree: state.jobTypeFilter.degree },
   };
   Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
   return config;
@@ -86,14 +87,20 @@ export function parseConfig(jsonText) {
   const salary = config.salaryFilter;
   const validSalaryValue = (value) => typeof value === "string"
     && (value === "" || (value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0));
-  if (!isObject(salary) || !["none", "range", "atLeast", "atMost"].includes(salary.type)
-    || !validSalaryValue(salary.min) || !validSalaryValue(salary.max)
-    || (salary.negotiable !== undefined && typeof salary.negotiable !== "boolean")) {
-    throw new Error("薪资配置无效，请检查薪资类型和上下限。");
+  const validBand = (band) => isObject(band) && validSalaryValue(band.min ?? "") && validSalaryValue(band.max ?? "");
+  // 新格式按类型分开（intern / campus / social），旧格式是 { type, min, max }
+  const validSalary = isObject(salary)
+    && (salary.negotiable === undefined || typeof salary.negotiable === "boolean")
+    && (salary.type !== undefined
+      ? ["none", "range", "atLeast", "atMost"].includes(salary.type) && validSalaryValue(salary.min) && validSalaryValue(salary.max)
+      : SALARY_BANDS.every(({ key }) => salary[key] === undefined || validBand(salary[key])));
+  if (!validSalary) {
+    throw new Error("薪资配置无效，请检查各类型的薪资上下限。");
   }
   const jobType = config.jobTypeFilter;
   const validKeys = (list, all, legacy = {}) => Array.isArray(list) && list.every((k) => legacy[k] || all.some(([key]) => key === k));
-  if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES, LEGACY_JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS))) {
+  if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES, LEGACY_JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS)
+    || (jobType.degree !== undefined && jobType.degree !== "" && !JOB_DEGREE_LABEL[jobType.degree]))) {
     throw new Error("岗位类型配置无效。");
   }
   const activityOptions = RECRUITER_STATUS_OPTIONS;
@@ -101,13 +108,9 @@ export function parseConfig(jsonText) {
     || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
     throw new Error("招聘者活跃状态配置无效。");
   }
-  // 薪资类型由上下限推出来（旧配置里“范围 + 最高留空”和“至少”是同一个意思）
-  const salaryMin = salary.type === "none" || salary.type === "atMost" ? "" : salary.min.trim();
-  const salaryMax = salary.type === "none" || salary.type === "atLeast" ? "" : salary.max.trim();
-  const salaryType = salaryMin && salaryMax ? "range" : salaryMin ? "atLeast" : salaryMax ? "atMost" : "none";
   const normalized = {
     targetCount: config.targetCount,
-    salaryFilter: { type: salaryType, min: salaryMin, max: salaryMax, negotiable: salary.negotiable !== false },
+    salaryFilter: normalizeSalaryFilter(salary),
     recruiterActivityStatus: [...config.recruiterActivityStatus],
     jobTypeFilter: normalizeJobTypeFilter(jobType),
   };
@@ -118,16 +121,16 @@ export function parseConfig(jsonText) {
 export function formatConfigValue(key, value) {
   if (key === "targetCount") return `${value} 次`;
   if (key === "salaryFilter") {
-    const range = value.type === "atLeast" && value.min ? `${value.min}K 以上`
-      : value.type === "atMost" && value.max ? `${value.max}K 以下`
-      : value.type === "range" && (value.min || value.max) ? `${value.min || "不限"} ~ ${value.max || "不限"}K` : "不限";
-    return `${range}，${value.negotiable === false ? "不含" : "含"}面议`;
+    const bands = SALARY_BANDS.filter(({ key: k }) => isSalaryBandActive(value[k]))
+      .map(({ key: k, label, unit }) => `${label} ${formatSalaryBand(value[k], unit)}`);
+    return `${bands.join("；") || "不限"}，${value.negotiable === false ? "不含" : "含"}面议`;
   }
   if (key === "jobTypeFilter") {
     const types = value.types.length === JOB_TYPES.length ? "全部类型" : value.types.map((k) => JOB_TYPE_LABEL[k]).join("、") || "不投任何类型";
     const years = value.types.includes("social") && value.years.length < JOB_YEARS.length
       ? `；社招 ${value.years.map((k) => JOB_YEARS_LABEL[k]).join("、") || "不投"}` : "";
-    return types + years;
+    const degree = activeDegree(value) ? `；学历 ${JOB_DEGREE_LABEL[value.degree]}及以下` : "";
+    return types + years + degree;
   }
   if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
   return value.map((keyword) => wizardKeywordName(keyword) || keyword).join("、");
@@ -180,7 +183,7 @@ export function writeConfig(config, undoValue) {
     config[key].forEach((tag) => state[key].push(tag));
   });
   state.targetCount = config.targetCount;
-  Object.assign(state.salaryFilter, config.salaryFilter);
+  state.salaryFilter = normalizeSalaryFilter(config.salaryFilter);
   state.settings.recruiterActivityStatus.splice(0);
   config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
   state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyJob, isJobTypeFilterActive, jobTypeMatches, normalizeJobTypeFilter } from "../src/rules/job-type.js";
+import { activeDegree, classifyJob, isJobTypeFilterActive, jobTypeMatches, normalizeJobTypeFilter } from "../src/rules/job-type.js";
 
 const kindOf = (job) => {
   const result = classifyJob(job);
@@ -80,7 +80,7 @@ test("规范化岗位类型设置", () => {
   assert.deepEqual(all.types, ["intern", "campus", "social"]);
   assert.deepEqual(all.years, ["y0_1", "y1_3", "y3_5", "y5p", "none"]);
   // 旧版本的“经验不限/未标明”（open、any、unknown）现在不用选，和未知值一起丢掉；顺序按固定顺序
-  assert.deepEqual(normalizeJobTypeFilter({ types: ["unknown", "campus", "open", "intern", "xxx"], years: [] }), { types: ["intern", "campus"], years: [] });
+  assert.deepEqual(normalizeJobTypeFilter({ types: ["unknown", "campus", "open", "intern", "xxx"], years: [] }), { types: ["intern", "campus"], years: [], degree: "" });
 });
 
 test("岗位类型是否在投递范围", () => {
@@ -144,3 +144,14 @@ test("没标类型、“经验不限”的岗位不管选了什么类型都照�
   assert.equal(jobTypeMatches(classifyJob({ title: "后端开发", desc: "要求3年以上工作经验" }), internOnly), false);
 });
 
+
+test("学历规范化与生效条件", () => {
+  assert.equal(normalizeJobTypeFilter({ degree: "master" }).degree, "master");
+  assert.equal(normalizeJobTypeFilter({ degree: "bogus" }).degree, "");
+  // 只选社招时学历不生效
+  assert.equal(activeDegree(normalizeJobTypeFilter({ types: ["social"], degree: "master" })), "");
+  assert.equal(activeDegree(normalizeJobTypeFilter({ types: ["campus", "social"], degree: "master" })), "master");
+  // 类型全选时，只有选了学历才算有筛选
+  assert.equal(isJobTypeFilterActive(normalizeJobTypeFilter(null)), false);
+  assert.equal(isJobTypeFilterActive(normalizeJobTypeFilter({ degree: "master" })), true);
+});

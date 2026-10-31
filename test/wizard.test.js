@@ -39,14 +39,17 @@ test("只选后端时，排除词挡掉前端岗，不挡后端岗", () => {
 test("岗位类型、薪资、招聘者", () => {
   const config = generateWizardConfig({ identities: ["intern"], minSalary: "8", onlyHr: true, recentActive: false });
   assert.deepEqual(config.jobTypeFilter.types, ["intern"]);
-  assert.deepEqual(config.salaryFilter, { type: "atLeast", min: "8", max: "", negotiable: true });
+  // 月薪 8K：校招、社招直接用，实习折成日薪（8000 / 24）
+  assert.deepEqual(config.salaryFilter, {
+    intern: { min: "333", max: "" }, campus: { min: "8", max: "" }, social: { min: "8", max: "" }, negotiable: true,
+  });
   assert.deepEqual(config.recruiterIncludeTags, ["hr*|招聘|人事"]);
   assert.deepEqual(config.recruiterActivityStatus, RECRUITER_STATUS_OPTIONS);
 });
 
 test("社招按经验年限上限生成", () => {
   const config = generateWizardConfig({ identities: ["social"], includeOpen: false, maxYears: "3" });
-  assert.deepEqual(config.jobTypeFilter, { types: ["social"], years: ["y0_1", "y1_3", "none"] });
+  assert.deepEqual(config.jobTypeFilter, { types: ["social"], years: ["y0_1", "y1_3", "none"], degree: "" });
 });
 
 test("向导里的关键词都是合法正则", () => {
@@ -72,3 +75,10 @@ test("向导生成的多写法关键词都有名字，改过的没有", () => {
   assert.equal(wizardKeywordName("java"), "");
 });
 
+
+test("向导把所选学历写进岗位类型（是否生效由岗位类型决定），非法值丢弃", () => {
+  assert.equal(generateWizardConfig({ identities: ["campus"], degree: "master" }).jobTypeFilter.degree, "master");
+  assert.equal(generateWizardConfig({ identities: ["social"], degree: "master" }).jobTypeFilter.degree, "master");
+  assert.equal(generateWizardConfig({ identities: ["intern"], degree: "bogus" }).jobTypeFilter.degree, "");
+  assert.equal(generateWizardConfig({ identities: ["intern"] }).jobTypeFilter.degree, "");
+});

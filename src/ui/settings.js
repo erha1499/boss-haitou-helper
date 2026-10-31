@@ -2,7 +2,8 @@ import { RECRUITER_STATUS_OPTIONS, REPO_URL } from "../config.js";
 import { Delivery } from "../delivery.js";
 import { hasFilterRules, jobTypeFilterActive } from "../filters.js";
 import { CoarsePreview } from "../preview.js";
-import { JOB_TYPES, JOB_YEARS, normalizeJobTypeFilter } from "../rules/job-type.js";
+import { JOB_DEGREES, JOB_TYPES, JOB_YEARS, normalizeJobTypeFilter } from "../rules/job-type.js";
+import { SALARY_BANDS, formatSalaryBand, isSalaryFilterActive, normalizeSalaryFilter } from "../rules/salary.js";
 import { splitAlternatives } from "../rules/keywords.js";
 import { wizardKeywordName } from "../rules/wizard.js";
 import { invalidateConfigUndo, saveTags } from "../settings-store.js";
@@ -216,10 +217,9 @@ export const SettingsMethods = {
     elements.coarseRequiredInput = coarseRequiredResult.input;
     elements.coarseRequiredTagList = coarseRequiredResult.tagList;
 
-    const salaryActive = () => (state.salaryFilter.type !== "none" && !!(state.salaryFilter.min || state.salaryFilter.max))
-      || state.salaryFilter.negotiable === false;
+    const salaryActive = () => isSalaryFilterActive(state.salaryFilter, state.jobTypeFilter.types);
     container.append(
-      this._createCollapsibleSection("岗位类型", "实习 / 校招 / 社招", [
+      this._createCollapsibleSection("岗位类型", "实习 / 校招 / 社招 / 学历", [
         this._createJobTypeSection(),
       ], () => (jobTypeFilterActive() ? 1 : 0)),
       this._createCollapsibleSection("职位列表粗筛", "职位名、地点、公司、薪资", [
@@ -249,10 +249,13 @@ export const SettingsMethods = {
 
   _createJobTypeSection() {
     const section = document.createElement("div");
+    const hasDegreeTypes = () => state.jobTypeFilter.types.includes("intern") || state.jobTypeFilter.types.includes("campus");
     const save = () => {
       invalidateConfigUndo();
       localStorage.setItem("zdlJobTypeFilter", JSON.stringify(state.jobTypeFilter));
       yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
+      degreeSection.hidden = !hasDegreeTypes();
+      this._syncSalaryRows?.();
       this._refreshFilterCounts();
       CoarsePreview.schedule();
     };
@@ -305,9 +308,42 @@ export const SettingsMethods = {
     rulesLink.textContent = "判断规则";
     rulesLink.title = "综合卡片经验标签、职位名和职位描述判断，点击查看完整规则";
     typesSection.querySelector(".zdl-filter-label").appendChild(rulesLink);
+    // 学历是包含关系：博士 ⊃ 硕士 ⊃ 本科，选哪档就投要求不高于它的岗位（再点一次取消，不限）
+    const degreeSection = document.createElement("div");
+    degreeSection.className = "zdl-tag-section";
+    const degreeRow = document.createElement("div");
+    degreeRow.className = "zdl-tag-row";
+    const degreeChips = document.createElement("div");
+    degreeChips.className = "zdl-status-tags";
+    const renderDegree = () => degreeChips.querySelectorAll("button").forEach((chip) => {
+      const on = JOB_DEGREES.findIndex(([k]) => k === state.jobTypeFilter.degree) >= JOB_DEGREES.findIndex(([k]) => k === chip.dataset.value)
+        && !!state.jobTypeFilter.degree;
+      chip.classList.toggle("active", on);
+      chip.setAttribute("aria-pressed", String(chip.dataset.value === state.jobTypeFilter.degree));
+    });
+    JOB_DEGREES.forEach(([key, label]) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "zdl-status-chip";
+      chip.dataset.value = key;
+      const check = document.createElement("span");
+      check.className = "zdl-status-check";
+      check.setAttribute("aria-hidden", "true");
+      chip.append(check, label);
+      chip.addEventListener("click", () => {
+        state.jobTypeFilter.degree = state.jobTypeFilter.degree === key ? "" : key;
+        renderDegree();
+        save();
+      });
+      degreeChips.appendChild(chip);
+    });
+    degreeRow.append(this._createFilterLabel("我的学历", "实习 / 校招时可选；博士包含硕士要求和本科要求的岗位，硕士包含本科，不选则不限。岗位没写学历的照常投"), degreeChips);
+    degreeSection.appendChild(degreeRow);
+    degreeSection.hidden = !hasDegreeTypes();
+    renderDegree();
     const yearsSection = make("社招年限", "按岗位要求的最低年限", JOB_YEARS, "years");
     yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
-    section.append(typesSection, yearsSection);
+    section.append(typesSection, yearsSection, degreeSection);
     return section;
   },
 
@@ -508,47 +544,9 @@ export const SettingsMethods = {
     const section = document.createElement("div");
     section.className = "zdl-tag-section";
 
-    const row = document.createElement("div");
-    row.className = "zdl-tag-row";
-
-    const label = this._createFilterLabel("薪资范围", "月薪，留空表示不限；日薪按 24 天折算");
-    const sf = state.salaryFilter;
-    const makeInput = (value, placeholder, aria) => {
-      const input = document.createElement("input");
-      input.className = "zdl-salary-input";
-      input.type = "number";
-      input.min = "0";
-      input.step = "1";
-      input.inputMode = "numeric";
-      input.placeholder = placeholder;
-      input.value = value;
-      input.setAttribute("aria-label", aria);
-      return input;
-    };
-    // 兼容旧配置：按类型决定显示哪一边的数值
-    const minInput = makeInput(sf.type === "range" || sf.type === "atLeast" ? sf.min : "", "不限", "最低月薪（K）");
-    const maxInput = makeInput(sf.type === "range" || sf.type === "atMost" ? sf.max : "", "不限", "最高月薪（K）");
-
-    const field = (input) => {
-      const wrap = document.createElement("label");
-      wrap.className = "zdl-salary-field";
-      const unit = document.createElement("span");
-      unit.className = "zdl-salary-unit";
-      unit.textContent = "K";
-      wrap.append(input, unit);
-      return wrap;
-    };
-    const sep = document.createElement("span");
-    sep.className = "zdl-salary-sep";
-    sep.textContent = "至";
-    const summary = document.createElement("span");
-    summary.className = "zdl-salary-summary";
-
-    const clean = (input) => {
-      const n = parseInt(input.value, 10);
-      input.value = Number.isFinite(n) && n > 0 ? String(n) : "";
-      return input.value;
-    };
+    const head = document.createElement("div");
+    head.className = "zdl-tag-row";
+    const label = this._createFilterLabel("薪资范围", "按岗位类型分开：实习按日薪（元/天），校招、社招按月薪（K）；留空表示不限");
     // 面议岗位是否收集；默认勾选，和以前“面议不拦截”的行为一致
     const negotiable = document.createElement("button");
     negotiable.type = "button";
@@ -558,48 +556,103 @@ export const SettingsMethods = {
     negotiableCheck.className = "zdl-status-check";
     negotiableCheck.setAttribute("aria-hidden", "true");
     negotiable.append(negotiableCheck, "可面议");
+    head.append(label, negotiable);
+    section.appendChild(head);
+
+    const makeInput = (value, aria) => {
+      const input = document.createElement("input");
+      input.className = "zdl-salary-input";
+      input.type = "number";
+      input.min = "0";
+      input.step = "1";
+      input.inputMode = "numeric";
+      input.placeholder = "不限";
+      input.value = value;
+      input.setAttribute("aria-label", aria);
+      return input;
+    };
+    const field = (input, unit) => {
+      const wrap = document.createElement("label");
+      wrap.className = "zdl-salary-field";
+      const unitEl = document.createElement("span");
+      unitEl.className = "zdl-salary-unit";
+      unitEl.textContent = unit;
+      wrap.append(input, unitEl);
+      return wrap;
+    };
+    const clean = (input) => {
+      const n = parseInt(input.value, 10);
+      input.value = Number.isFinite(n) && n > 0 ? String(n) : "";
+      return input.value;
+    };
+
+    const rows = SALARY_BANDS.map(({ key, label: name, unit }) => {
+      const row = document.createElement("div");
+      row.className = "zdl-tag-row zdl-salary-row";
+      const rowLabel = document.createElement("span");
+      rowLabel.className = "zdl-salary-band";
+      rowLabel.textContent = name;
+      const minInput = makeInput(state.salaryFilter[key].min, `${name}最低薪资（${unit}）`);
+      const maxInput = makeInput(state.salaryFilter[key].max, `${name}最高薪资（${unit}）`);
+      const sep = document.createElement("span");
+      sep.className = "zdl-salary-sep";
+      sep.textContent = "至";
+      const summary = document.createElement("span");
+      summary.className = "zdl-salary-summary";
+      row.append(rowLabel, field(minInput, unit), sep, field(maxInput, unit), summary);
+      section.appendChild(row);
+      return { key, unit, row, minInput, maxInput, summary };
+    });
+
+    const renderSummary = ({ key, unit, summary }) => {
+      const band = state.salaryFilter[key];
+      summary.textContent = formatSalaryBand(band, unit);
+      summary.classList.toggle("empty", !band.min && !band.max);
+    };
+    // 只显示选中的岗位类型对应的薪资；一个都没选时全部显示
+    this._syncSalaryRows = () => {
+      const types = state.jobTypeFilter.types;
+      rows.forEach((r) => { r.row.hidden = types.length > 0 && !types.includes(r.key); });
+    };
     const renderNegotiable = () => {
       const on = state.salaryFilter.negotiable !== false;
       negotiable.classList.toggle("active", on);
       negotiable.setAttribute("aria-pressed", String(on));
+    };
+    const saveSalary = () => {
+      const next = { negotiable: state.salaryFilter.negotiable };
+      rows.forEach((r) => {
+        let min = clean(r.minInput), max = clean(r.maxInput);
+        if (min && max && Number(min) > Number(max)) {
+          [min, max] = [max, min];
+          r.minInput.value = min;
+          r.maxInput.value = max;
+        }
+        next[r.key] = { min, max };
+      });
+      state.salaryFilter = normalizeSalaryFilter(next);
+      rows.forEach(renderSummary);
+      invalidateConfigUndo();
+      localStorage.setItem("salaryFilter", JSON.stringify(state.salaryFilter));
+      this._refreshFilterCounts();
+      CoarsePreview.schedule();
     };
     negotiable.addEventListener("click", () => {
       state.salaryFilter.negotiable = state.salaryFilter.negotiable === false;
       renderNegotiable();
       saveSalary();
     });
-
-    const renderSummary = (min, max) => {
-      const range = min && max ? `${min}–${max}K` : min ? `${min}K 以上` : max ? `${max}K 以下` : "不限";
-      summary.textContent = state.salaryFilter.negotiable === false ? `${range} · 不含面议` : range;
-      summary.classList.toggle("empty", !min && !max && state.salaryFilter.negotiable !== false);
-    };
-    const saveSalary = () => {
-      let min = clean(minInput), max = clean(maxInput);
-      if (min && max && Number(min) > Number(max)) {
-        [min, max] = [max, min];
-        minInput.value = min;
-        maxInput.value = max;
-      }
-      state.salaryFilter.type = min && max ? "range" : min ? "atLeast" : max ? "atMost" : "none";
-      state.salaryFilter.min = min;
-      state.salaryFilter.max = max;
-      renderSummary(min, max);
-      invalidateConfigUndo();
-      localStorage.setItem("salaryFilter", JSON.stringify(state.salaryFilter));
-      this._refreshFilterCounts();
-      CoarsePreview.schedule();
-    };
-    minInput.addEventListener("change", saveSalary);
-    maxInput.addEventListener("change", saveSalary);
-    [minInput, maxInput].forEach((input) => input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") input.blur();
-    }));
-
+    rows.forEach((r) => {
+      [r.minInput, r.maxInput].forEach((input) => {
+        input.addEventListener("change", saveSalary);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") input.blur();
+        });
+      });
+      renderSummary(r);
+    });
     renderNegotiable();
-    renderSummary(minInput.value, maxInput.value);
-    row.append(label, field(minInput), sep, field(maxInput), negotiable, summary);
-    section.appendChild(row);
+    this._syncSalaryRows();
     return section;
   },
 

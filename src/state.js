@@ -1,5 +1,6 @@
 import { CONFIG, getStoredJSON } from "./config.js";
 import { normalizeJobTypeFilter } from "./rules/job-type.js";
+import { normalizeSalaryFilter } from "./rules/salary.js";
 
 export const state = {
   isRunning: false,
@@ -11,7 +12,7 @@ export const state = {
 
   includeTags: getStoredJSON("includeTags", []).map((t) => typeof t === "string" ? t : t.text),
   locationTags: getStoredJSON("locationTags", []),
-  salaryFilter: { type: "none", min: "", max: "", negotiable: true, ...getStoredJSON("salaryFilter", {}) },
+  salaryFilter: normalizeSalaryFilter(getStoredJSON("salaryFilter", {})),
   detailBlockedTags: getStoredJSON("detailBlockedTags", []),
   detailRequiredTags: getStoredJSON("detailRequiredTags", []),
   detailOptionalTags: getStoredJSON("detailOptionalTags", []),

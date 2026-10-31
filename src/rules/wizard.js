@@ -1,5 +1,6 @@
-import { RECRUITER_STATUS_OPTIONS } from "../config.js";
-import { JOB_YEARS, normalizeJobTypeFilter } from "./job-type.js";
+import { CONFIG, RECRUITER_STATUS_OPTIONS } from "../config.js";
+import { JOB_DEGREES, JOB_YEARS, normalizeJobTypeFilter } from "./job-type.js";
+import { normalizeSalaryFilter } from "./salary.js";
 
 // ---------- 求职向导 ----------
 // 方向：include 写进“职位名包含任一”；exclusive 的方向没被选中时，signature 写进“职位名排除”。
@@ -35,7 +36,7 @@ export const WIZARD_HR = "hr*|招聘|人事";
 export const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
 export const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
 export const defaultWizardAnswers = () => ({
-  identities: [], maxYears: "3", directions: [], stacks: [],
+  identities: [], maxYears: "3", degree: "", directions: [], stacks: [],
   minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
 });
 
@@ -57,13 +58,17 @@ export function generateWizardConfig(answers) {
   const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
   const min = String(parseInt(a.minSalary, 10) || "");
   return {
-    jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
+    jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k), degree: JOB_DEGREES.some(([k]) => k === a.degree) ? a.degree : "" }),
     includeTags,
     coarseRequiredTags: [],
     coarseBlockedTags,
     detailRequiredTags: [],
     detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
-    salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
+    // 向导填的是月薪：校招、社招直接用，实习折成日薪
+    salaryFilter: normalizeSalaryFilter({
+      intern: { min: min ? String(Math.round(Number(min) * 1000 / CONFIG.WORK_DAYS_PER_MONTH)) : "" },
+      campus: { min }, social: { min }, negotiable: a.negotiable !== false,
+    }),
     recruiterIncludeTags: a.onlyHr ? [WIZARD_HR] : [],
     recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
   };

@@ -4,9 +4,18 @@
   "config": {
     "targetCount": 150,
     "salaryFilter": {
-      "type": "atLeast",
-      "min": "20",
-      "max": "",
+      "intern": {
+        "min": "833",
+        "max": ""
+      },
+      "campus": {
+        "min": "20",
+        "max": ""
+      },
+      "social": {
+        "min": "20",
+        "max": ""
+      },
       "negotiable": true
     },
     "recruiterActivityStatus": [
@@ -24,7 +33,8 @@
         "y1_3",
         "y3_5",
         "none"
-      ]
+      ],
+      "degree": ""
     },
     "includeTags": [
       "后[端台]|服务端|服务器开发|server|[研开]发工程师|软件开发|软件工程师",

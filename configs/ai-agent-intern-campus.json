@@ -4,9 +4,18 @@
   "config": {
     "targetCount": 150,
     "salaryFilter": {
-      "type": "none",
-      "min": "",
-      "max": "",
+      "intern": {
+        "min": "",
+        "max": ""
+      },
+      "campus": {
+        "min": "",
+        "max": ""
+      },
+      "social": {
+        "min": "",
+        "max": ""
+      },
       "negotiable": true
     },
     "recruiterActivityStatus": [
@@ -26,7 +35,8 @@
         "y3_5",
         "y5p",
         "none"
-      ]
+      ],
+      "degree": ""
     },
     "includeTags": [
       "ai*|agent|智能体|大模型|llm|aigc|rag"

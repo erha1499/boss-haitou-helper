@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { explainCoarse } from "../src/rules/coarse.js";
 import { normalizeJobTypeFilter } from "../src/rules/job-type.js";
+import { normalizeSalaryFilter } from "../src/rules/salary.js";
 
 const noRules = {
   blockedCompanies: [], coarseBlockedTags: [], coarseRequiredTags: [], includeTags: [], locationTags: [],
-  salaryFilter: { type: "none", min: "", max: "", negotiable: true },
+  salaryFilter: normalizeSalaryFilter(null),
   jobTypeFilter: normalizeJobTypeFilter(null),
 };
 const card = (extra = {}) => ({ jobId: "j1", title: "Java后端开发", company: "某某科技", address: "杭州·西湖区", salary: "15-25K", headhunter: false, tags: [], ...extra });
@@ -41,8 +42,8 @@ test("工作地", () => {
 });
 
 test("薪资", () => {
-  assert.equal(reason(card(), { salaryFilter: { type: "atLeast", min: "30", max: "", negotiable: true } }), "salary");
-  const label = explainCoarse(card({ salary: "面议" }), null, { ...noRules, salaryFilter: { type: "none", negotiable: false } }).label;
+  assert.equal(reason(card(), { salaryFilter: { campus: { min: "30" }, social: { min: "30" } } }), "salary");
+  const label = explainCoarse(card({ salary: "面议" }), null, { ...noRules, salaryFilter: { negotiable: false } }).label;
   assert.equal(label, "薪资面议");
 });
 
@@ -57,4 +58,35 @@ test("卡片写明年限且不在范围内时，列表阶段就排除", () => {
 
 test("判断顺序：排除公司优先于其他规则", () => {
   assert.equal(reason(card(), { blockedCompanies: ["某某"], coarseBlockedTags: ["后端"], locationTags: ["北京"] }), "company");
+});
+
+test("学历：选了的学历及以下才收集，岗位没写学历的照常收集", () => {
+  const master = normalizeJobTypeFilter({ types: ["intern", "campus"], degree: "master" });
+  const bachelor = normalizeJobTypeFilter({ types: ["intern", "campus"], degree: "bachelor" });
+  const doctorRole = card({ title: "算法实习生", tags: ["在校/应届", "博士"] });
+  assert.equal(reason(doctorRole, { jobTypeFilter: master }), "degree");
+  assert.equal(explainCoarse(doctorRole, null, { ...noRules, jobTypeFilter: master }).label, '学历要求"博士"');
+  assert.equal(reason(card({ tags: ["在校/应届", "硕士"] }), { jobTypeFilter: master }), "");
+  assert.equal(reason(card({ tags: ["在校/应届", "硕士"] }), { jobTypeFilter: bachelor }), "degree");
+  assert.equal(reason(card({ tags: ["在校/应届", "本科"] }), { jobTypeFilter: bachelor }), "");
+  assert.equal(reason(card({ tags: ["在校/应届", "学历不限"] }), { jobTypeFilter: bachelor }), "");
+  assert.equal(reason(card({ tags: ["在校/应届"] }), { jobTypeFilter: bachelor }), "");
+});
+
+test("没选实习/校招时学历不生效", () => {
+  const socialOnly = normalizeJobTypeFilter({ types: ["social"], degree: "bachelor" });
+  assert.equal(reason(card({ tags: ["博士"] }), { jobTypeFilter: socialOnly }), "");
+});
+
+test("实习、校招、社招的薪资分开筛选", () => {
+  const salaryFilter = normalizeSalaryFilter({ intern: { min: "200" }, campus: { min: "15" }, social: { min: "25" } });
+  // 实习：按日薪
+  assert.equal(reason(card({ title: "后端实习生", salary: "150-180元/天" }), { salaryFilter }), "salary");
+  assert.equal(reason(card({ title: "后端实习生", salary: "200-300元/天" }), { salaryFilter }), "");
+  // 校招：按月薪 K
+  assert.equal(reason(card({ tags: ["在校/应届"], salary: "10-12K" }), { salaryFilter }), "salary");
+  assert.equal(reason(card({ tags: ["在校/应届"], salary: "12-18K" }), { salaryFilter }), "");
+  // 社招（写明年限）：用社招档
+  assert.equal(reason(card({ tags: ["3-5年"], salary: "15-20K" }), { salaryFilter }), "salary");
+  assert.equal(reason(card({ tags: ["3-5年"], salary: "20-30K" }), { salaryFilter }), "");
 });

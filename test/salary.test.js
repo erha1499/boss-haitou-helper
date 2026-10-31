@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decodeSalary, parseSalaryRange, salaryInFilter } from "../src/rules/salary.js";
+import { decodeSalary, normalizeSalaryFilter, parseDailyRange, parseSalaryRange, salaryInFilter } from "../src/rules/salary.js";
 
 test("解码 BOSS 用私有字体显示的数字", () => {
   assert.equal(decodeSalary("-K"), "10-20K");
@@ -39,4 +39,26 @@ test("面议按「可面议」开关处理", () => {
   assert.equal(salaryInFilter("面议", { ...filter, negotiable: true }), true);
   assert.equal(salaryInFilter("面议", { ...filter, negotiable: false }), false);
   assert.equal(salaryInFilter("面议", filter), true);
+});
+
+test("日薪区间：按天的直接取值，按月的按 24 天折算", () => {
+  assert.deepEqual(parseDailyRange("200-300元/天"), { min: 200, max: 300 });
+  assert.deepEqual(parseDailyRange("150元/天"), { min: 150, max: 150 });
+  assert.deepEqual(parseDailyRange("6-9K"), { min: 250, max: 375 });
+  assert.equal(parseDailyRange("面议"), null);
+});
+
+test("旧格式的薪资配置沿用到校招和社招，实习不限", () => {
+  assert.deepEqual(normalizeSalaryFilter({ type: "range", min: "10", max: "20", negotiable: false }), {
+    intern: { min: "", max: "" }, campus: { min: "10", max: "20" }, social: { min: "10", max: "20" }, negotiable: false,
+  });
+  assert.deepEqual(normalizeSalaryFilter({ type: "none", min: "5", max: "" }).campus, { min: "", max: "" });
+  assert.deepEqual(normalizeSalaryFilter(null).social, { min: "", max: "" });
+});
+
+test("没标类型的岗位，校招、社招任一档符合就收集", () => {
+  const sf = normalizeSalaryFilter({ campus: { min: "20" }, social: { min: "30" } });
+  assert.equal(salaryInFilter("20-25K", sf, { kind: "unknown" }), true);
+  assert.equal(salaryInFilter("10-15K", sf, { kind: "unknown" }), false);
+  assert.equal(salaryInFilter("20-25K", sf, { kind: "years", bucket: "y3_5" }), false);
 });

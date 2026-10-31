@@ -1,4 +1,4 @@
-import { JOB_YEARS_LABEL, classifyJob, isJobTypeFilterActive, jobTypeMatches } from "./job-type.js";
+import { JOB_YEARS_LABEL, classifyJob, degreeRejectBy, isJobTypeFilterActive, jobTypeMatches } from "./job-type.js";
 import { matchKeyword } from "./keywords.js";
 import { isNegotiableSalary, salaryInFilter } from "./salary.js";
 
@@ -30,9 +30,12 @@ export function explainCoarse(info, contacted, rules) {
   if (rules.locationTags.length && !rules.locationTags.some((k) => matchKeyword(address, k))) {
     return { reason: "location", label: "工作地不符" };
   }
-  if (!salaryInFilter(info.salary, rules.salaryFilter)) {
+  const classified = classifyJob({ title: info.title, tags: info.tags, salary: info.salary });
+  if (!salaryInFilter(info.salary, rules.salaryFilter, classified)) {
     return { reason: "salary", label: isNegotiableSalary(info.salary) ? "薪资面议" : "薪资不符" };
   }
+  const degree = degreeRejectBy(info.tags, rules.jobTypeFilter);
+  if (degree) return { reason: "degree", label: `学历要求"${degree}"` };
   const jobType = coarseJobTypeRejectBy(info, rules.jobTypeFilter);
   if (jobType) return { reason: "jobtype", label: `经验要求"${JOB_YEARS_LABEL[jobType.bucket]}"` };
   return { reason: "", label: "" };

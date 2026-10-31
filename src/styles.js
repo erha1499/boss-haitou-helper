@@ -232,6 +232,9 @@ li.job-card-box.zdl-preview-flash{outline:2px solid #f59e0b;outline-offset:-2px;
 .zdl-salary-field .zdl-salary-input::placeholder{color:#b4c1d4}
 .zdl-salary-summary{margin-left:auto;padding:0 8px;border-radius:10px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px;font-weight:500;line-height:1.9;white-space:nowrap}
 .zdl-salary-negotiable{height:32px;box-sizing:border-box}
+.zdl-salary-band{flex-shrink:0;width:32px;color:var(--zdl-text-2);font-size:12px}
+.zdl-salary-row{align-items:center}
+.zdl-salary-row[hidden]{display:none}
 .zdl-salary-summary.empty{background:transparent;color:var(--zdl-text-4);font-weight:400}
 a.zdl-icon-btn{text-decoration:none}
 li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-offset:-2px;border-radius:12px}

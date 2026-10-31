@@ -4,9 +4,18 @@
   "config": {
     "targetCount": 150,
     "salaryFilter": {
-      "type": "none",
-      "min": "",
-      "max": "",
+      "intern": {
+        "min": "",
+        "max": ""
+      },
+      "campus": {
+        "min": "",
+        "max": ""
+      },
+      "social": {
+        "min": "",
+        "max": ""
+      },
       "negotiable": true
     },
     "recruiterActivityStatus": [
@@ -25,7 +34,8 @@
         "y3_5",
         "y5p",
         "none"
-      ]
+      ],
+      "degree": ""
     },
     "includeTags": [
       "算法|机器学习|深度学习|强化学习|多模态|大模型训练|数据挖掘|计算机视觉|自然语言|语音识别|cv|nlp|ocr|slam|推荐|搜索",

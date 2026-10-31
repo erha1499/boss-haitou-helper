@@ -218,6 +218,11 @@
   // 可选的岗位类型。没标类型（含“经验不限”）的岗位不在这里选：它们总会收集，打开详情后按职位描述再判断。
   const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"]];
   const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
+  // 学历是包含关系：博士 ⊃ 硕士 ⊃ 本科。选哪一档就投要求不高于它的岗位，空字符串表示不限。
+  const JOB_DEGREES = [["bachelor", "本科"], ["master", "硕士"], ["doctor", "博士"]];
+  const JOB_DEGREE_LABEL = Object.fromEntries(JOB_DEGREES);
+  const DEGREE_RANK = { bachelor: 1, master: 2, doctor: 3 };
+  const TAG_DEGREE_RANK = { 本科: 1, 硕士: 2, 博士: 3 };
   const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
   const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
   // 日志里显示的具体类型名（“经验不限”和“未标明”在筛选上是同一档，显示时区分开）
@@ -231,7 +236,19 @@
       const mapped = list.map((k) => legacy[k] || k);
       return all.map(([k]) => k).filter((k) => mapped.includes(k));
     };
-    return { types: pick(value?.types, JOB_TYPES, LEGACY_JOB_TYPES), years: pick(value?.years, JOB_YEARS) };
+    const degree = JOB_DEGREE_LABEL[value?.degree] ? value.degree : "";
+    return { types: pick(value?.types, JOB_TYPES, LEGACY_JOB_TYPES), years: pick(value?.years, JOB_YEARS), degree };
+  }
+
+  // 学历只在选了实习或校招时生效（界面上也只在那时出现）
+  const activeDegree = (filter) => (filter.degree && (filter.types.includes("intern") || filter.types.includes("campus")) ? filter.degree : "");
+
+  // 岗位学历要求高于所选学历时返回要求的学历名；标签里没写学历、学历不限、大专及以下都不拦截
+  function degreeRejectBy(tags, filter) {
+    const degree = activeDegree(filter);
+    if (!degree) return "";
+    const required = tags.map((t) => t.trim()).find((t) => TAG_DEGREE_RANK[t]);
+    return required && TAG_DEGREE_RANK[required] > DEGREE_RANK[degree] ? required : "";
   }
 
   const CN_DIGITS = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
@@ -364,9 +381,10 @@
     return { kind: "unknown", label: "未标明", evidence: "" };
   }
 
-  // filter 为 normalizeJobTypeFilter 的结果：{ types: [...], years: [...] }
+  // filter 为 normalizeJobTypeFilter 的结果：{ types: [...], years: [...], degree }
   const isJobTypeFilterActive = (filter) => filter.types.length < JOB_TYPES.length
-    || (filter.types.includes("social") && filter.years.length < JOB_YEARS.length);
+    || (filter.types.includes("social") && filter.years.length < JOB_YEARS.length)
+    || !!activeDegree(filter);
 
   function jobTypeMatches(result, { types, years }) {
     if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);
@@ -376,6 +394,127 @@
     }
     // 没标类型、描述里也看不出来的岗位照常投，不因为缺标签被过滤
     return true;
+  }
+
+  const SALARY_DECODE_MAP = {
+    e031: "0", e032: "1", e033: "2", e034: "3", e035: "4",
+    e036: "5", e037: "6", e038: "7", e039: "8", e03a: "9",
+  };
+
+  function decodeSalary(text) {
+    let result = "";
+    for (const ch of text) {
+      const hex = ch.codePointAt(0).toString(16).toLowerCase();
+      result += SALARY_DECODE_MAP[hex] || ch;
+    }
+    return result;
+  }
+
+  function parseSalaryRange(decodedText) {
+    // 按天计薪：xxx-xxx元/天 → 折算为月薪K（按每月工作日常量，向上取整）
+    const perDay = decodedText.match(/(\d+)\s*-\s*(\d+)\s*元\/[天日]/);
+    if (perDay) {
+      return {
+        min: Math.ceil(parseInt(perDay[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
+        max: Math.ceil(parseInt(perDay[2], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
+      };
+    }
+    const perDaySingle = decodedText.match(/(\d+)\s*元\/[天日]/);
+    if (perDaySingle) {
+      const val = Math.ceil(parseInt(perDaySingle[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000);
+      return { min: val, max: val };
+    }
+    // 按月计薪：xx-xxK
+    const cleaned = decodedText.replace(/[Kk].*$/, "K");
+    const match = cleaned.match(/(\d+)\s*-\s*(\d+)\s*[Kk]/);
+    if (match) return { min: parseInt(match[1], 10), max: parseInt(match[2], 10) };
+    const single = cleaned.match(/(\d+)\s*[Kk]/);
+    if (single) return { min: parseInt(single[1], 10), max: parseInt(single[1], 10) };
+    return null;
+  }
+
+  const isNegotiableSalary = (salaryText) => /面议/.test(salaryText);
+
+  // 薪资筛选按岗位类型分开：实习按日薪（元/天），校招、社招按月薪（K）。
+  // { intern: { min, max }, campus: { min, max }, social: { min, max }, negotiable }，留空表示不限。
+  const SALARY_BANDS = [
+    { key: "intern", label: "实习", unit: "元/天" },
+    { key: "campus", label: "校招", unit: "K" },
+    { key: "social", label: "社招", unit: "K" },
+  ];
+
+  const cleanSalaryValue = (value) => {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) && n > 0 ? String(n) : "";
+  };
+  const cleanBand = (band) => {
+    let min = cleanSalaryValue(band?.min), max = cleanSalaryValue(band?.max);
+    if (min && max && Number(min) > Number(max)) [min, max] = [max, min];
+    return { min, max };
+  };
+
+  // 兼容旧格式 { type, min, max, negotiable }（不分类型，单位 K）：数值沿用到校招和社招，实习不限
+  function normalizeSalaryFilter(value) {
+    const negotiable = value?.negotiable !== false;
+    if (value && "type" in value) {
+      const min = value.type === "range" || value.type === "atLeast" ? value.min : "";
+      const max = value.type === "range" || value.type === "atMost" ? value.max : "";
+      const band = cleanBand({ min, max });
+      return { intern: cleanBand(null), campus: { ...band }, social: { ...band }, negotiable };
+    }
+    return { intern: cleanBand(value?.intern), campus: cleanBand(value?.campus), social: cleanBand(value?.social), negotiable };
+  }
+
+  const isSalaryBandActive = (band) => !!(band && (band.min || band.max));
+  const isSalaryFilterActive = (sf, types) => {
+    const f = normalizeSalaryFilter(sf);
+    return f.negotiable === false || SALARY_BANDS.some(({ key }) => (!types || types.includes(key)) && isSalaryBandActive(f[key]));
+  };
+
+  function formatSalaryBand(band, unit) {
+    if (band.min && band.max) return `${band.min}–${band.max}${unit}`;
+    if (band.min) return `${band.min}${unit}以上`;
+    if (band.max) return `${band.max}${unit}以下`;
+    return "不限";
+  }
+
+  // 日薪（元/天）：写明按天的直接取值，按月的用每月工作日折算
+  function parseDailyRange(decodedText) {
+    const perDay = decodedText.match(/(\d+)\s*-\s*(\d+)\s*元\/[天日]/);
+    if (perDay) return { min: parseInt(perDay[1], 10), max: parseInt(perDay[2], 10) };
+    const perDaySingle = decodedText.match(/(\d+)\s*元\/[天日]/);
+    if (perDaySingle) return { min: parseInt(perDaySingle[1], 10), max: parseInt(perDaySingle[1], 10) };
+    const monthly = parseSalaryRange(decodedText);
+    if (!monthly) return null;
+    return {
+      min: Math.floor(monthly.min * 1000 / CONFIG.WORK_DAYS_PER_MONTH),
+      max: Math.ceil(monthly.max * 1000 / CONFIG.WORK_DAYS_PER_MONTH),
+    };
+  }
+
+  // 这个岗位该按哪几档薪资筛选。年限类和社招信号按社招；没标类型的（经验不限、看不出）校招、社招都算。
+  function salaryBandsFor(result) {
+    if (result?.kind === "years") return ["social"];
+    if (result?.kind === "soft") {
+      const keys = new Set();
+      result.types.forEach((t) => (t === "open" ? ["campus", "social"].forEach((k) => keys.add(k)) : keys.add(t)));
+      return [...keys];
+    }
+    return ["campus", "social"];
+  }
+
+  // result 为 classifyJob 的结果。区间有重叠就算符合；读不出薪资的、该档没设范围的不拦截。
+  // 命中多个类型时，任一档符合即可。
+  function salaryInFilter(salaryText, salaryFilter, result) {
+    const sf = normalizeSalaryFilter(salaryFilter);
+    if (isNegotiableSalary(salaryText)) return sf.negotiable;
+    return salaryBandsFor(result).some((key) => {
+      const { min, max } = sf[key];
+      if (!min && !max) return true;
+      const parsed = key === "intern" ? parseDailyRange(salaryText) : parseSalaryRange(salaryText);
+      if (!parsed) return true;
+      return (!min || parsed.max >= Number(min)) && (!max || parsed.min <= Number(max));
+    });
   }
 
   const state = {
@@ -388,7 +527,7 @@
 
     includeTags: getStoredJSON("includeTags", []).map((t) => typeof t === "string" ? t : t.text),
     locationTags: getStoredJSON("locationTags", []),
-    salaryFilter: { type: "none", min: "", max: "", negotiable: true, ...getStoredJSON("salaryFilter", {}) },
+    salaryFilter: normalizeSalaryFilter(getStoredJSON("salaryFilter", {})),
     detailBlockedTags: getStoredJSON("detailBlockedTags", []),
     detailRequiredTags: getStoredJSON("detailRequiredTags", []),
     detailOptionalTags: getStoredJSON("detailOptionalTags", []),
@@ -643,57 +782,6 @@
     return `${start > 0 ? "…" : ""}${before}「${match[0]}」${after}${end < text.length ? "…" : ""}`;
   }
 
-  const SALARY_DECODE_MAP = {
-    e031: "0", e032: "1", e033: "2", e034: "3", e035: "4",
-    e036: "5", e037: "6", e038: "7", e039: "8", e03a: "9",
-  };
-
-  function decodeSalary(text) {
-    let result = "";
-    for (const ch of text) {
-      const hex = ch.codePointAt(0).toString(16).toLowerCase();
-      result += SALARY_DECODE_MAP[hex] || ch;
-    }
-    return result;
-  }
-
-  function parseSalaryRange(decodedText) {
-    // 按天计薪：xxx-xxx元/天 → 折算为月薪K（按每月工作日常量，向上取整）
-    const perDay = decodedText.match(/(\d+)\s*-\s*(\d+)\s*元\/[天日]/);
-    if (perDay) {
-      return {
-        min: Math.ceil(parseInt(perDay[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
-        max: Math.ceil(parseInt(perDay[2], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000),
-      };
-    }
-    const perDaySingle = decodedText.match(/(\d+)\s*元\/[天日]/);
-    if (perDaySingle) {
-      const val = Math.ceil(parseInt(perDaySingle[1], 10) * CONFIG.WORK_DAYS_PER_MONTH / 1000);
-      return { min: val, max: val };
-    }
-    // 按月计薪：xx-xxK
-    const cleaned = decodedText.replace(/[Kk].*$/, "K");
-    const match = cleaned.match(/(\d+)\s*-\s*(\d+)\s*[Kk]/);
-    if (match) return { min: parseInt(match[1], 10), max: parseInt(match[2], 10) };
-    const single = cleaned.match(/(\d+)\s*[Kk]/);
-    if (single) return { min: parseInt(single[1], 10), max: parseInt(single[1], 10) };
-    return null;
-  }
-
-  const isNegotiableSalary = (salaryText) => /面议/.test(salaryText);
-
-  // 薪资筛选：sf 为 { type: "none" | "range" | "atLeast" | "atMost", min, max, negotiable }，单位 K。
-  // 区间有重叠就算符合；读不出薪资的不拦截。
-  function salaryInFilter(salaryText, sf) {
-    if (isNegotiableSalary(salaryText)) return sf.negotiable !== false;
-    const min = (sf.type === "range" || sf.type === "atLeast") && sf.min ? parseInt(sf.min, 10) : null;
-    const max = (sf.type === "range" || sf.type === "atMost") && sf.max ? parseInt(sf.max, 10) : null;
-    if (min === null && max === null) return true;
-    const parsed = parseSalaryRange(salaryText);
-    if (!parsed) return true;
-    return (min === null || parsed.max >= min) && (max === null || parsed.min <= max);
-  }
-
   // 粗筛阶段只能看卡片：只有写明年限且不在范围内才排除，其余留到详情再判断
   function coarseJobTypeRejectBy(info, jobTypeFilter) {
     if (!isJobTypeFilterActive(jobTypeFilter)) return null;
@@ -722,9 +810,12 @@
     if (rules.locationTags.length && !rules.locationTags.some((k) => matchKeyword(address, k))) {
       return { reason: "location", label: "工作地不符" };
     }
-    if (!salaryInFilter(info.salary, rules.salaryFilter)) {
+    const classified = classifyJob({ title: info.title, tags: info.tags, salary: info.salary });
+    if (!salaryInFilter(info.salary, rules.salaryFilter, classified)) {
       return { reason: "salary", label: isNegotiableSalary(info.salary) ? "薪资面议" : "薪资不符" };
     }
+    const degree = degreeRejectBy(info.tags, rules.jobTypeFilter);
+    if (degree) return { reason: "degree", label: `学历要求"${degree}"` };
     const jobType = coarseJobTypeRejectBy(info, rules.jobTypeFilter);
     if (jobType) return { reason: "jobtype", label: `经验要求"${JOB_YEARS_LABEL[jobType.bucket]}"` };
     return { reason: "", label: "" };
@@ -744,7 +835,6 @@
   }
 
   // 下面这些按当前筛选设置（state）判断，具体规则在 rules/ 里，方便单独测试。
-  const salaryMatches = (salaryText) => salaryInFilter(salaryText, state.salaryFilter);
   const coarseExplain = (info, contacted) => explainCoarse(info, contacted, state);
   const coarseRejectReason = (info, contacted) => coarseExplain(info, contacted).reason;
   const jobTypeFilterActive = () => isJobTypeFilterActive(state.jobTypeFilter);
@@ -1120,7 +1210,7 @@
   const WIZARD_RECENT_STATUS = ["在线", "刚刚活跃", "今日活跃", "3日内活跃"];
   const WIZARD_YEARS_UP_TO = { 1: ["y0_1", "none"], 3: ["y0_1", "y1_3", "none"], 5: ["y0_1", "y1_3", "y3_5", "none"], all: JOB_YEARS.map(([k]) => k) };
   const defaultWizardAnswers = () => ({
-    identities: [], maxYears: "3", directions: [], stacks: [],
+    identities: [], maxYears: "3", degree: "", directions: [], stacks: [],
     minSalary: "", negotiable: true, onlyHr: false, recentActive: true, excludeNonTech: true,
   });
 
@@ -1142,13 +1232,17 @@
     const years = WIZARD_YEARS_UP_TO[a.maxYears] || WIZARD_YEARS_UP_TO.all;
     const min = String(parseInt(a.minSalary, 10) || "");
     return {
-      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k) }),
+      jobTypeFilter: normalizeJobTypeFilter({ types, years: a.identities.includes("social") ? years : JOB_YEARS.map(([k]) => k), degree: JOB_DEGREES.some(([k]) => k === a.degree) ? a.degree : "" }),
       includeTags,
       coarseRequiredTags: [],
       coarseBlockedTags,
       detailRequiredTags: [],
       detailOptionalTags: WIZARD_STACKS.filter((s) => a.stacks.includes(s.key)).map((s) => s.jd),
-      salaryFilter: { type: min ? "atLeast" : "none", min, max: "", negotiable: a.negotiable !== false },
+      // 向导填的是月薪：校招、社招直接用，实习折成日薪
+      salaryFilter: normalizeSalaryFilter({
+        intern: { min: min ? String(Math.round(Number(min) * 1000 / CONFIG.WORK_DAYS_PER_MONTH)) : "" },
+        campus: { min }, social: { min }, negotiable: a.negotiable !== false,
+      }),
       recruiterIncludeTags: a.onlyHr ? [WIZARD_HR] : [],
       recruiterActivityStatus: a.recentActive ? [...WIZARD_RECENT_STATUS] : [...RECRUITER_STATUS_OPTIONS],
     };
@@ -1219,9 +1313,9 @@
   function getCurrentConfig() {
     const config = {
       targetCount: state.targetCount,
-      salaryFilter: { type: state.salaryFilter.type, min: state.salaryFilter.min, max: state.salaryFilter.max, negotiable: state.salaryFilter.negotiable !== false },
+      salaryFilter: normalizeSalaryFilter(state.salaryFilter),
       recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
-      jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years] },
+      jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years], degree: state.jobTypeFilter.degree },
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
     return config;
@@ -1255,14 +1349,20 @@
     const salary = config.salaryFilter;
     const validSalaryValue = (value) => typeof value === "string"
       && (value === "" || (value.trim() !== "" && Number.isFinite(Number(value)) && Number(value) >= 0));
-    if (!isObject(salary) || !["none", "range", "atLeast", "atMost"].includes(salary.type)
-      || !validSalaryValue(salary.min) || !validSalaryValue(salary.max)
-      || (salary.negotiable !== undefined && typeof salary.negotiable !== "boolean")) {
-      throw new Error("薪资配置无效，请检查薪资类型和上下限。");
+    const validBand = (band) => isObject(band) && validSalaryValue(band.min ?? "") && validSalaryValue(band.max ?? "");
+    // 新格式按类型分开（intern / campus / social），旧格式是 { type, min, max }
+    const validSalary = isObject(salary)
+      && (salary.negotiable === undefined || typeof salary.negotiable === "boolean")
+      && (salary.type !== undefined
+        ? ["none", "range", "atLeast", "atMost"].includes(salary.type) && validSalaryValue(salary.min) && validSalaryValue(salary.max)
+        : SALARY_BANDS.every(({ key }) => salary[key] === undefined || validBand(salary[key])));
+    if (!validSalary) {
+      throw new Error("薪资配置无效，请检查各类型的薪资上下限。");
     }
     const jobType = config.jobTypeFilter;
     const validKeys = (list, all, legacy = {}) => Array.isArray(list) && list.every((k) => legacy[k] || all.some(([key]) => key === k));
-    if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES, LEGACY_JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS))) {
+    if (jobType !== undefined && (!isObject(jobType) || !validKeys(jobType.types, JOB_TYPES, LEGACY_JOB_TYPES) || !validKeys(jobType.years, JOB_YEARS)
+      || (jobType.degree !== undefined && jobType.degree !== "" && !JOB_DEGREE_LABEL[jobType.degree]))) {
       throw new Error("岗位类型配置无效。");
     }
     const activityOptions = RECRUITER_STATUS_OPTIONS;
@@ -1270,13 +1370,9 @@
       || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
       throw new Error("招聘者活跃状态配置无效。");
     }
-    // 薪资类型由上下限推出来（旧配置里“范围 + 最高留空”和“至少”是同一个意思）
-    const salaryMin = salary.type === "none" || salary.type === "atMost" ? "" : salary.min.trim();
-    const salaryMax = salary.type === "none" || salary.type === "atLeast" ? "" : salary.max.trim();
-    const salaryType = salaryMin && salaryMax ? "range" : salaryMin ? "atLeast" : salaryMax ? "atMost" : "none";
     const normalized = {
       targetCount: config.targetCount,
-      salaryFilter: { type: salaryType, min: salaryMin, max: salaryMax, negotiable: salary.negotiable !== false },
+      salaryFilter: normalizeSalaryFilter(salary),
       recruiterActivityStatus: [...config.recruiterActivityStatus],
       jobTypeFilter: normalizeJobTypeFilter(jobType),
     };
@@ -1287,16 +1383,16 @@
   function formatConfigValue(key, value) {
     if (key === "targetCount") return `${value} 次`;
     if (key === "salaryFilter") {
-      const range = value.type === "atLeast" && value.min ? `${value.min}K 以上`
-        : value.type === "atMost" && value.max ? `${value.max}K 以下`
-        : value.type === "range" && (value.min || value.max) ? `${value.min || "不限"} ~ ${value.max || "不限"}K` : "不限";
-      return `${range}，${value.negotiable === false ? "不含" : "含"}面议`;
+      const bands = SALARY_BANDS.filter(({ key: k }) => isSalaryBandActive(value[k]))
+        .map(({ key: k, label, unit }) => `${label} ${formatSalaryBand(value[k], unit)}`);
+      return `${bands.join("；") || "不限"}，${value.negotiable === false ? "不含" : "含"}面议`;
     }
     if (key === "jobTypeFilter") {
       const types = value.types.length === JOB_TYPES.length ? "全部类型" : value.types.map((k) => JOB_TYPE_LABEL[k]).join("、") || "不投任何类型";
       const years = value.types.includes("social") && value.years.length < JOB_YEARS.length
         ? `；社招 ${value.years.map((k) => JOB_YEARS_LABEL[k]).join("、") || "不投"}` : "";
-      return types + years;
+      const degree = activeDegree(value) ? `；学历 ${JOB_DEGREE_LABEL[value.degree]}及以下` : "";
+      return types + years + degree;
     }
     if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
     return value.map((keyword) => wizardKeywordName(keyword) || keyword).join("、");
@@ -1349,7 +1445,7 @@
       config[key].forEach((tag) => state[key].push(tag));
     });
     state.targetCount = config.targetCount;
-    Object.assign(state.salaryFilter, config.salaryFilter);
+    state.salaryFilter = normalizeSalaryFilter(config.salaryFilter);
     state.settings.recruiterActivityStatus.splice(0);
     config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
     state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);
@@ -1886,10 +1982,9 @@
       elements.coarseRequiredInput = coarseRequiredResult.input;
       elements.coarseRequiredTagList = coarseRequiredResult.tagList;
 
-      const salaryActive = () => (state.salaryFilter.type !== "none" && !!(state.salaryFilter.min || state.salaryFilter.max))
-        || state.salaryFilter.negotiable === false;
+      const salaryActive = () => isSalaryFilterActive(state.salaryFilter, state.jobTypeFilter.types);
       container.append(
-        this._createCollapsibleSection("岗位类型", "实习 / 校招 / 社招", [
+        this._createCollapsibleSection("岗位类型", "实习 / 校招 / 社招 / 学历", [
           this._createJobTypeSection(),
         ], () => (jobTypeFilterActive() ? 1 : 0)),
         this._createCollapsibleSection("职位列表粗筛", "职位名、地点、公司、薪资", [
@@ -1919,10 +2014,13 @@
 
     _createJobTypeSection() {
       const section = document.createElement("div");
+      const hasDegreeTypes = () => state.jobTypeFilter.types.includes("intern") || state.jobTypeFilter.types.includes("campus");
       const save = () => {
         invalidateConfigUndo();
         localStorage.setItem("zdlJobTypeFilter", JSON.stringify(state.jobTypeFilter));
         yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
+        degreeSection.hidden = !hasDegreeTypes();
+        this._syncSalaryRows?.();
         this._refreshFilterCounts();
         CoarsePreview.schedule();
       };
@@ -1975,9 +2073,42 @@
       rulesLink.textContent = "判断规则";
       rulesLink.title = "综合卡片经验标签、职位名和职位描述判断，点击查看完整规则";
       typesSection.querySelector(".zdl-filter-label").appendChild(rulesLink);
+      // 学历是包含关系：博士 ⊃ 硕士 ⊃ 本科，选哪档就投要求不高于它的岗位（再点一次取消，不限）
+      const degreeSection = document.createElement("div");
+      degreeSection.className = "zdl-tag-section";
+      const degreeRow = document.createElement("div");
+      degreeRow.className = "zdl-tag-row";
+      const degreeChips = document.createElement("div");
+      degreeChips.className = "zdl-status-tags";
+      const renderDegree = () => degreeChips.querySelectorAll("button").forEach((chip) => {
+        const on = JOB_DEGREES.findIndex(([k]) => k === state.jobTypeFilter.degree) >= JOB_DEGREES.findIndex(([k]) => k === chip.dataset.value)
+          && !!state.jobTypeFilter.degree;
+        chip.classList.toggle("active", on);
+        chip.setAttribute("aria-pressed", String(chip.dataset.value === state.jobTypeFilter.degree));
+      });
+      JOB_DEGREES.forEach(([key, label]) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "zdl-status-chip";
+        chip.dataset.value = key;
+        const check = document.createElement("span");
+        check.className = "zdl-status-check";
+        check.setAttribute("aria-hidden", "true");
+        chip.append(check, label);
+        chip.addEventListener("click", () => {
+          state.jobTypeFilter.degree = state.jobTypeFilter.degree === key ? "" : key;
+          renderDegree();
+          save();
+        });
+        degreeChips.appendChild(chip);
+      });
+      degreeRow.append(this._createFilterLabel("我的学历", "实习 / 校招时可选；博士包含硕士要求和本科要求的岗位，硕士包含本科，不选则不限。岗位没写学历的照常投"), degreeChips);
+      degreeSection.appendChild(degreeRow);
+      degreeSection.hidden = !hasDegreeTypes();
+      renderDegree();
       const yearsSection = make("社招年限", "按岗位要求的最低年限", JOB_YEARS, "years");
       yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
-      section.append(typesSection, yearsSection);
+      section.append(typesSection, yearsSection, degreeSection);
       return section;
     },
 
@@ -2178,47 +2309,9 @@
       const section = document.createElement("div");
       section.className = "zdl-tag-section";
 
-      const row = document.createElement("div");
-      row.className = "zdl-tag-row";
-
-      const label = this._createFilterLabel("薪资范围", "月薪，留空表示不限；日薪按 24 天折算");
-      const sf = state.salaryFilter;
-      const makeInput = (value, placeholder, aria) => {
-        const input = document.createElement("input");
-        input.className = "zdl-salary-input";
-        input.type = "number";
-        input.min = "0";
-        input.step = "1";
-        input.inputMode = "numeric";
-        input.placeholder = placeholder;
-        input.value = value;
-        input.setAttribute("aria-label", aria);
-        return input;
-      };
-      // 兼容旧配置：按类型决定显示哪一边的数值
-      const minInput = makeInput(sf.type === "range" || sf.type === "atLeast" ? sf.min : "", "不限", "最低月薪（K）");
-      const maxInput = makeInput(sf.type === "range" || sf.type === "atMost" ? sf.max : "", "不限", "最高月薪（K）");
-
-      const field = (input) => {
-        const wrap = document.createElement("label");
-        wrap.className = "zdl-salary-field";
-        const unit = document.createElement("span");
-        unit.className = "zdl-salary-unit";
-        unit.textContent = "K";
-        wrap.append(input, unit);
-        return wrap;
-      };
-      const sep = document.createElement("span");
-      sep.className = "zdl-salary-sep";
-      sep.textContent = "至";
-      const summary = document.createElement("span");
-      summary.className = "zdl-salary-summary";
-
-      const clean = (input) => {
-        const n = parseInt(input.value, 10);
-        input.value = Number.isFinite(n) && n > 0 ? String(n) : "";
-        return input.value;
-      };
+      const head = document.createElement("div");
+      head.className = "zdl-tag-row";
+      const label = this._createFilterLabel("薪资范围", "按岗位类型分开：实习按日薪（元/天），校招、社招按月薪（K）；留空表示不限");
       // 面议岗位是否收集；默认勾选，和以前“面议不拦截”的行为一致
       const negotiable = document.createElement("button");
       negotiable.type = "button";
@@ -2228,48 +2321,103 @@
       negotiableCheck.className = "zdl-status-check";
       negotiableCheck.setAttribute("aria-hidden", "true");
       negotiable.append(negotiableCheck, "可面议");
+      head.append(label, negotiable);
+      section.appendChild(head);
+
+      const makeInput = (value, aria) => {
+        const input = document.createElement("input");
+        input.className = "zdl-salary-input";
+        input.type = "number";
+        input.min = "0";
+        input.step = "1";
+        input.inputMode = "numeric";
+        input.placeholder = "不限";
+        input.value = value;
+        input.setAttribute("aria-label", aria);
+        return input;
+      };
+      const field = (input, unit) => {
+        const wrap = document.createElement("label");
+        wrap.className = "zdl-salary-field";
+        const unitEl = document.createElement("span");
+        unitEl.className = "zdl-salary-unit";
+        unitEl.textContent = unit;
+        wrap.append(input, unitEl);
+        return wrap;
+      };
+      const clean = (input) => {
+        const n = parseInt(input.value, 10);
+        input.value = Number.isFinite(n) && n > 0 ? String(n) : "";
+        return input.value;
+      };
+
+      const rows = SALARY_BANDS.map(({ key, label: name, unit }) => {
+        const row = document.createElement("div");
+        row.className = "zdl-tag-row zdl-salary-row";
+        const rowLabel = document.createElement("span");
+        rowLabel.className = "zdl-salary-band";
+        rowLabel.textContent = name;
+        const minInput = makeInput(state.salaryFilter[key].min, `${name}最低薪资（${unit}）`);
+        const maxInput = makeInput(state.salaryFilter[key].max, `${name}最高薪资（${unit}）`);
+        const sep = document.createElement("span");
+        sep.className = "zdl-salary-sep";
+        sep.textContent = "至";
+        const summary = document.createElement("span");
+        summary.className = "zdl-salary-summary";
+        row.append(rowLabel, field(minInput, unit), sep, field(maxInput, unit), summary);
+        section.appendChild(row);
+        return { key, unit, row, minInput, maxInput, summary };
+      });
+
+      const renderSummary = ({ key, unit, summary }) => {
+        const band = state.salaryFilter[key];
+        summary.textContent = formatSalaryBand(band, unit);
+        summary.classList.toggle("empty", !band.min && !band.max);
+      };
+      // 只显示选中的岗位类型对应的薪资；一个都没选时全部显示
+      this._syncSalaryRows = () => {
+        const types = state.jobTypeFilter.types;
+        rows.forEach((r) => { r.row.hidden = types.length > 0 && !types.includes(r.key); });
+      };
       const renderNegotiable = () => {
         const on = state.salaryFilter.negotiable !== false;
         negotiable.classList.toggle("active", on);
         negotiable.setAttribute("aria-pressed", String(on));
+      };
+      const saveSalary = () => {
+        const next = { negotiable: state.salaryFilter.negotiable };
+        rows.forEach((r) => {
+          let min = clean(r.minInput), max = clean(r.maxInput);
+          if (min && max && Number(min) > Number(max)) {
+            [min, max] = [max, min];
+            r.minInput.value = min;
+            r.maxInput.value = max;
+          }
+          next[r.key] = { min, max };
+        });
+        state.salaryFilter = normalizeSalaryFilter(next);
+        rows.forEach(renderSummary);
+        invalidateConfigUndo();
+        localStorage.setItem("salaryFilter", JSON.stringify(state.salaryFilter));
+        this._refreshFilterCounts();
+        CoarsePreview.schedule();
       };
       negotiable.addEventListener("click", () => {
         state.salaryFilter.negotiable = state.salaryFilter.negotiable === false;
         renderNegotiable();
         saveSalary();
       });
-
-      const renderSummary = (min, max) => {
-        const range = min && max ? `${min}–${max}K` : min ? `${min}K 以上` : max ? `${max}K 以下` : "不限";
-        summary.textContent = state.salaryFilter.negotiable === false ? `${range} · 不含面议` : range;
-        summary.classList.toggle("empty", !min && !max && state.salaryFilter.negotiable !== false);
-      };
-      const saveSalary = () => {
-        let min = clean(minInput), max = clean(maxInput);
-        if (min && max && Number(min) > Number(max)) {
-          [min, max] = [max, min];
-          minInput.value = min;
-          maxInput.value = max;
-        }
-        state.salaryFilter.type = min && max ? "range" : min ? "atLeast" : max ? "atMost" : "none";
-        state.salaryFilter.min = min;
-        state.salaryFilter.max = max;
-        renderSummary(min, max);
-        invalidateConfigUndo();
-        localStorage.setItem("salaryFilter", JSON.stringify(state.salaryFilter));
-        this._refreshFilterCounts();
-        CoarsePreview.schedule();
-      };
-      minInput.addEventListener("change", saveSalary);
-      maxInput.addEventListener("change", saveSalary);
-      [minInput, maxInput].forEach((input) => input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") input.blur();
-      }));
-
+      rows.forEach((r) => {
+        [r.minInput, r.maxInput].forEach((input) => {
+          input.addEventListener("change", saveSalary);
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") input.blur();
+          });
+        });
+        renderSummary(r);
+      });
       renderNegotiable();
-      renderSummary(minInput.value, maxInput.value);
-      row.append(label, field(minInput), sep, field(maxInput), negotiable, summary);
-      section.appendChild(row);
+      this._syncSalaryRows();
       return section;
     },
 
@@ -3637,7 +3785,17 @@
       yearsSelect.value = answers.maxYears;
       yearsSelect.addEventListener("change", () => { answers.maxYears = yearsSelect.value; onChange(); });
       years.append("社招接受经验要求", yearsSelect);
-      const step1 = step("1", "你在找什么", "可多选；没标类型的岗位会照常收集，打开详情后再判断", identityRow, years);
+      // 学历是包含关系：选硕士 = 本科、硕士要求的岗位都投，不投要求博士的
+      const degree = document.createElement("label");
+      degree.className = "zdl-wizard-inline";
+      const degreeSelect = document.createElement("select");
+      degreeSelect.className = "zdl-wizard-select";
+      degreeSelect.add(new Option("不限", ""));
+      JOB_DEGREES.forEach(([value, text]) => degreeSelect.add(new Option(`${text}（含${value === "bachelor" ? "学历不限" : value === "master" ? "本科" : "硕士、本科"}要求）`, value)));
+      degreeSelect.value = answers.degree;
+      degreeSelect.addEventListener("change", () => { answers.degree = degreeSelect.value; onChange(); });
+      degree.append("我的学历", degreeSelect);
+      const step1 = step("1", "你在找什么", "可多选；没标类型的岗位会照常收集，打开详情后再判断", identityRow, years, degree);
       // ② 方向
       const step2 = step("2", "想做什么方向", "可多选，没选的方向会被排除",
         chips(WIZARD_DIRECTIONS.map((d) => [d.key, d.label]), (k) => answers.directions.includes(k), listToggle("directions")));
@@ -3679,6 +3837,7 @@
       const onChange = () => {
         save();
         years.hidden = !answers.identities.includes("social");
+        degree.hidden = !(answers.identities.includes("intern") || answers.identities.includes("campus"));
         const ready = answers.identities.length && answers.directions.length;
         generate.disabled = !ready;
         hint.textContent = ready ? "会覆盖岗位类型、职位名、技术栈、薪资和招聘者规则" : "至少选一个身份和一个方向";
@@ -4088,7 +4247,7 @@
       const parts = keys.filter(([key]) => count(key)).map(([key, name]) => `${name} ${count(key)}`);
       return parts.length ? `${label}${parts.join("/")}` : "";
     };
-    const salary = config.salaryFilter.type !== "none" || config.salaryFilter.negotiable === false;
+    const salary = isSalaryFilterActive(config.salaryFilter, config.jobTypeFilter.types);
     const activity = count("recruiterActivityStatus") < RECRUITER_STATUS_OPTIONS.length;
     const summary = [
       jobTypeFilterActive() ? formatConfigValue("jobTypeFilter", config.jobTypeFilter) : "",
@@ -4345,6 +4504,8 @@
           desc: cleanDesc(document.querySelector(BOSS.detailDesc)),
           salary: item.salary,
         });
+        const degree = degreeRejectBy(detailTags.length ? [...(item.tags || []), ...detailTags] : item.tags || [], state.jobTypeFilter);
+        if (degree) return skip(`学历要求"${degree}"`, `学历要求"${degree}"`, true);
         if (!jobTypeAccepted(jobType)) {
           return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`, true);
         }
@@ -5109,6 +5270,9 @@ li.job-card-box.zdl-preview-flash{outline:2px solid #f59e0b;outline-offset:-2px;
 .zdl-salary-field .zdl-salary-input::placeholder{color:#b4c1d4}
 .zdl-salary-summary{margin-left:auto;padding:0 8px;border-radius:10px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px;font-weight:500;line-height:1.9;white-space:nowrap}
 .zdl-salary-negotiable{height:32px;box-sizing:border-box}
+.zdl-salary-band{flex-shrink:0;width:32px;color:var(--zdl-text-2);font-size:12px}
+.zdl-salary-row{align-items:center}
+.zdl-salary-row[hidden]{display:none}
 .zdl-salary-summary.empty{background:transparent;color:var(--zdl-text-4);font-weight:400}
 a.zdl-icon-btn{text-decoration:none}
 li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-offset:-2px;border-radius:12px}

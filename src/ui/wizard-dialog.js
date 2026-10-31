@@ -1,5 +1,6 @@
 import { getStoredJSON } from "../config.js";
 import { CoarsePreview } from "../preview.js";
+import { JOB_DEGREES } from "../rules/job-type.js";
 import { WIZARD_DIRECTIONS, WIZARD_STACKS, defaultWizardAnswers, generateWizardConfig } from "../rules/wizard.js";
 import { getConfigChanges, getCurrentConfig, importConfig, parseConfig } from "../settings-store.js";
 import { elements, state } from "../state.js";
@@ -87,7 +88,17 @@ export const WizardMethods = {
     yearsSelect.value = answers.maxYears;
     yearsSelect.addEventListener("change", () => { answers.maxYears = yearsSelect.value; onChange(); });
     years.append("社招接受经验要求", yearsSelect);
-    const step1 = step("1", "你在找什么", "可多选；没标类型的岗位会照常收集，打开详情后再判断", identityRow, years);
+    // 学历是包含关系：选硕士 = 本科、硕士要求的岗位都投，不投要求博士的
+    const degree = document.createElement("label");
+    degree.className = "zdl-wizard-inline";
+    const degreeSelect = document.createElement("select");
+    degreeSelect.className = "zdl-wizard-select";
+    degreeSelect.add(new Option("不限", ""));
+    JOB_DEGREES.forEach(([value, text]) => degreeSelect.add(new Option(`${text}（含${value === "bachelor" ? "学历不限" : value === "master" ? "本科" : "硕士、本科"}要求）`, value)));
+    degreeSelect.value = answers.degree;
+    degreeSelect.addEventListener("change", () => { answers.degree = degreeSelect.value; onChange(); });
+    degree.append("我的学历", degreeSelect);
+    const step1 = step("1", "你在找什么", "可多选；没标类型的岗位会照常收集，打开详情后再判断", identityRow, years, degree);
     // ② 方向
     const step2 = step("2", "想做什么方向", "可多选，没选的方向会被排除",
       chips(WIZARD_DIRECTIONS.map((d) => [d.key, d.label]), (k) => answers.directions.includes(k), listToggle("directions")));
@@ -129,6 +140,7 @@ export const WizardMethods = {
     const onChange = () => {
       save();
       years.hidden = !answers.identities.includes("social");
+      degree.hidden = !(answers.identities.includes("intern") || answers.identities.includes("campus"));
       const ready = answers.identities.length && answers.directions.length;
       generate.disabled = !ready;
       hint.textContent = ready ? "会覆盖岗位类型、职位名、技术栈、薪资和招聘者规则" : "至少选一个身份和一个方向";

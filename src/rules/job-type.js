@@ -4,6 +4,11 @@
 // 可选的岗位类型。没标类型（含“经验不限”）的岗位不在这里选：它们总会收集，打开详情后按职位描述再判断。
 export const JOB_TYPES = [["intern", "实习"], ["campus", "校招/应届"], ["social", "社招"]];
 export const JOB_YEARS = [["y0_1", "1年以内"], ["y1_3", "1-3年"], ["y3_5", "3-5年"], ["y5p", "5年以上"], ["none", "未写年限"]];
+// 学历是包含关系：博士 ⊃ 硕士 ⊃ 本科。选哪一档就投要求不高于它的岗位，空字符串表示不限。
+export const JOB_DEGREES = [["bachelor", "本科"], ["master", "硕士"], ["doctor", "博士"]];
+export const JOB_DEGREE_LABEL = Object.fromEntries(JOB_DEGREES);
+const DEGREE_RANK = { bachelor: 1, master: 2, doctor: 3 };
+const TAG_DEGREE_RANK = { 本科: 1, 硕士: 2, 博士: 3 };
 export const JOB_TYPE_LABEL = Object.fromEntries(JOB_TYPES);
 export const JOB_YEARS_LABEL = Object.fromEntries(JOB_YEARS);
 // 日志里显示的具体类型名（“经验不限”和“未标明”在筛选上是同一档，显示时区分开）
@@ -17,7 +22,19 @@ export function normalizeJobTypeFilter(value) {
     const mapped = list.map((k) => legacy[k] || k);
     return all.map(([k]) => k).filter((k) => mapped.includes(k));
   };
-  return { types: pick(value?.types, JOB_TYPES, LEGACY_JOB_TYPES), years: pick(value?.years, JOB_YEARS) };
+  const degree = JOB_DEGREE_LABEL[value?.degree] ? value.degree : "";
+  return { types: pick(value?.types, JOB_TYPES, LEGACY_JOB_TYPES), years: pick(value?.years, JOB_YEARS), degree };
+}
+
+// 学历只在选了实习或校招时生效（界面上也只在那时出现）
+export const activeDegree = (filter) => (filter.degree && (filter.types.includes("intern") || filter.types.includes("campus")) ? filter.degree : "");
+
+// 岗位学历要求高于所选学历时返回要求的学历名；标签里没写学历、学历不限、大专及以下都不拦截
+export function degreeRejectBy(tags, filter) {
+  const degree = activeDegree(filter);
+  if (!degree) return "";
+  const required = tags.map((t) => t.trim()).find((t) => TAG_DEGREE_RANK[t]);
+  return required && TAG_DEGREE_RANK[required] > DEGREE_RANK[degree] ? required : "";
 }
 
 export const CN_DIGITS = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
@@ -150,9 +167,10 @@ export function classifyJob({ title = "", tags = [], desc = "", salary = "" }) {
   return { kind: "unknown", label: "未标明", evidence: "" };
 }
 
-// filter 为 normalizeJobTypeFilter 的结果：{ types: [...], years: [...] }
+// filter 为 normalizeJobTypeFilter 的结果：{ types: [...], years: [...], degree }
 export const isJobTypeFilterActive = (filter) => filter.types.length < JOB_TYPES.length
-  || (filter.types.includes("social") && filter.years.length < JOB_YEARS.length);
+  || (filter.types.includes("social") && filter.years.length < JOB_YEARS.length)
+  || !!activeDegree(filter);
 
 export function jobTypeMatches(result, { types, years }) {
   if (result.kind === "years") return types.includes("social") && years.includes(result.bucket);

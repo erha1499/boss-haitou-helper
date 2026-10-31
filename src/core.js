@@ -5,7 +5,8 @@ import { CONFIG, RECRUITER_STATUS_OPTIONS, isJobsPage } from "./config.js";
 import { ContactedJobs } from "./contacted.js";
 import { DELIVERY_LOCK_NAME, Delivery } from "./delivery.js";
 import { coarseExplain, coarseRejectReason, hasFilterRules, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
-import { classifyJob } from "./rules/job-type.js";
+import { classifyJob, degreeRejectBy } from "./rules/job-type.js";
+import { isSalaryFilterActive } from "./rules/salary.js";
 import { keywordSnippet, matchKeyword } from "./rules/keywords.js";
 import { RunStatus } from "./run-status.js";
 import { CONFIG_FIELD_LABELS, formatConfigValue, getCurrentConfig } from "./settings-store.js";
@@ -39,7 +40,7 @@ function filterSummary() {
     const parts = keys.filter(([key]) => count(key)).map(([key, name]) => `${name} ${count(key)}`);
     return parts.length ? `${label}${parts.join("/")}` : "";
   };
-  const salary = config.salaryFilter.type !== "none" || config.salaryFilter.negotiable === false;
+  const salary = isSalaryFilterActive(config.salaryFilter, config.jobTypeFilter.types);
   const activity = count("recruiterActivityStatus") < RECRUITER_STATUS_OPTIONS.length;
   const summary = [
     jobTypeFilterActive() ? formatConfigValue("jobTypeFilter", config.jobTypeFilter) : "",
@@ -296,6 +297,8 @@ export const Core = {
         desc: cleanDesc(document.querySelector(BOSS.detailDesc)),
         salary: item.salary,
       });
+      const degree = degreeRejectBy(detailTags.length ? [...(item.tags || []), ...detailTags] : item.tags || [], state.jobTypeFilter);
+      if (degree) return skip(`学历要求"${degree}"`, `学历要求"${degree}"`, true);
       if (!jobTypeAccepted(jobType)) {
         return skip(`岗位类型"${jobType.label}"不在投递范围${jobType.evidence ? `（${jobType.evidence}）` : ""}`, `岗位类型"${jobType.label}"`, true);
       }

@@ -2,7 +2,7 @@ import { BOSS } from "./boss/selectors.js";
 import { ContactedJobs } from "./contacted.js";
 import { coarseJobTypeRejectBy, explainCoarse } from "./rules/coarse.js";
 import { isJobTypeFilterActive, jobTypeMatches } from "./rules/job-type.js";
-import { decodeSalary, salaryInFilter } from "./rules/salary.js";
+import { decodeSalary } from "./rules/salary.js";
 import { state } from "./state.js";
 
 export function readCardInfo(card) {
@@ -19,7 +19,6 @@ export function readCardInfo(card) {
 }
 
 // 下面这些按当前筛选设置（state）判断，具体规则在 rules/ 里，方便单独测试。
-export const salaryMatches = (salaryText) => salaryInFilter(salaryText, state.salaryFilter);
 export const coarseExplain = (info, contacted) => explainCoarse(info, contacted, state);
 export const coarseRejectReason = (info, contacted) => coarseExplain(info, contacted).reason;
 export const jobTypeFilterActive = () => isJobTypeFilterActive(state.jobTypeFilter);
