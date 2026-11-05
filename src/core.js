@@ -492,27 +492,33 @@ export const Core = {
     if (Delivery.isCurrent(run)) stopProcess(run);
   },
 
-  // 开始投递时看列表上方的栏目：先投「推荐」（按岗位类型设好筛选），投完再依次切到用户的求职意向。
-  // 手动开始时从当前栏目往后投；自动刷新后从「推荐」重新开始。
+  // 开始投递时看列表上方的栏目，定好这次要投哪些栏目、按什么顺序：
+  // - 停在「推荐」上（或没选中栏目）：先投「推荐」（按岗位类型设好筛选），再依次投每个求职意向
+  // - 停在某个求职意向上：不投「推荐」，从这个求职意向开始，把所有求职意向都投一遍
+  // 都投完才刷新页面；刷新后按同一个起点重新来一遍。
   async prepareTabs(run) {
-    let tabs = ExpectTabs.list();
+    const tabs = ExpectTabs.list();
     if (!tabs.length) return;
     if (tabs.length === 1 && !run.chain) {
       this.log(`提示：还没有添加求职意向。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
         + "添加「期望职位」后，投完「推荐」会自动切到各个求职意向继续投");
     }
-    let index = ExpectTabs.activeIndex(tabs);
-    if (run.chain || index < 0) {
-      RunStatus.setActivity("正在切换到「推荐」…");
-      await ExpectTabs.select(tabs[0], () => Delivery.isCurrent(run));
+    let start = run.chain
+      ? tabs.findIndex((tab) => !tab.recommend && tab.name === run.chain.startTab)
+      : ExpectTabs.activeIndex(tabs);
+    if (start < 0) start = 0;
+    if (ExpectTabs.activeIndex(tabs) !== start) {
+      RunStatus.setActivity(`正在切换到「${tabs[start].name}」…`);
+      await ExpectTabs.select(tabs[start], () => Delivery.isCurrent(run));
       if (!Delivery.isCurrent(run)) return;
-      tabs = ExpectTabs.list();
-      index = 0;
     }
-    run.tabs = { names: tabs.map((tab) => tab.name), index, original: null, applied: false };
-    const rest = run.tabs.names.slice(index + 1);
-    if (rest.length) this.log(`从「${run.tabs.names[index]}」开始，投完依次切换到：${rest.map((name) => `「${name}」`).join("")}`);
-    if (index === 0) await this.applyRecommendFilters(run);
+    const names = tabs.map((tab) => tab.name);
+    const order = start === 0 ? names : [...names.slice(start), ...names.slice(1, start)];
+    run.tabs = { order, index: 0, startTab: start === 0 ? "" : order[0], original: null, applied: false };
+    const rest = order.slice(1).map((name) => `「${name}」`).join("");
+    const head = start === 0 ? `从「${order[0]}」开始` : `从求职意向「${order[0]}」开始，这次不投「推荐」`;
+    if (start > 0 || rest) this.log(rest ? `${head}，投完依次切换到：${rest}` : head);
+    if (start === 0) await this.applyRecommendFilters(run);
   },
 
   // 「推荐」按用户定位列岗位，按岗位类型设置帮用户选好求职类型和工作经验，能投的会多一些
@@ -535,14 +541,14 @@ export const Core = {
     await ExpectTabs.applyFilters(run.tabs.original, isCurrent);
   },
 
-  // 当前栏目投完了，切到下一个求职意向。切了返回 true，后面没有栏目了返回 false
+  // 当前栏目投完了，按顺序切到下一个求职意向。切了返回 true，这次要投的栏目都投完了返回 false
   async switchToNextTab(run, reason) {
     const tabs = run.tabs;
     if (!tabs) return false;
-    while (tabs.index < tabs.names.length - 1) {
-      const from = tabs.names[tabs.index];
+    while (tabs.index < tabs.order.length - 1) {
+      const from = tabs.order[tabs.index];
       tabs.index++;
-      const name = tabs.names[tabs.index];
+      const name = tabs.order[tabs.index];
       const tab = ExpectTabs.list().find((item) => !item.recommend && item.name === name);
       if (!tab) {
         this.log(`没找到求职意向「${name}」，跳过`);

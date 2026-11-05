@@ -55,6 +55,8 @@ export const AutoRefresh = {
     const chain = {
       uid: run.uid, rules, refreshes, empty, resumeAt: Date.now(),
       delivered: run.delivered, skips: run.skips,
+      // 从哪个求职意向开始投的（空表示从「推荐」开始），刷新后按同一个起点重新来一遍
+      startTab: run.tabs?.startTab || "",
       seen: [...run.seen].slice(-MAX_SEEN),
     };
     return this._write(chain) ? { refreshes } : { stop: "storage" };

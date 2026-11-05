@@ -465,7 +465,42 @@ test("在「推荐」投满目标后也把筛选改回去", async () => {
   }
 });
 
-test("手动选了求职意向再开始时从这个栏目往后投，不改筛选", async () => {
+test("停在求职意向上开始时不投「推荐」，从这个求职意向开始把所有求职意向投完才刷新，刷新后还从这里开始", async () => {
+  const tabs = [{ name: "Python(杭州)", jobs: [campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }];
+  const first = await openFakeBoss({ jobs: [campus(1)], tabs, storage: campusFilter });
+  let chain;
+  try {
+    first.document.querySelectorAll(".expect-item")[1].click();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const lines = await first.run();
+    assert.deepEqual(first.chats, ["job3", "job2"]);
+    assert.deepEqual(first.visitedTabs, ["推荐", "Java(深圳)", "Python(杭州)"]);
+    assert.deepEqual(first.filterHistory, []);
+    assert.ok(hasLog(lines, /从求职意向Java\(深圳\)开始，这次不投推荐，投完依次切换到：Python\(杭州\)/), lines.join("\n"));
+    assert.ok(hasLog(lines, /^Java\(深圳\)已投完（.*），切换到求职意向Python\(杭州\)继续/), lines.join("\n"));
+    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递（第 1 次刷新）/), lines.join("\n"));
+    chain = readChain(first);
+    assert.equal(chain.startTab, "Java(深圳)");
+  } finally {
+    first.close();
+  }
+
+  // 刷新后页面回到「推荐」，脚本切回 Java(深圳) 重新来一遍，仍然不投「推荐」
+  const second = await openFakeBoss({
+    jobs: [campus(1)], tabs: [{ name: "Python(杭州)", jobs: [campus(4)] }, { name: "Java(深圳)", jobs: [campus(5)] }],
+    storage: campusFilter, session: { zdlAutoRefreshV1: { ...chain, resumeAt: Date.now() } },
+  });
+  try {
+    await waitLog(second, /第 2 次刷新/);
+    assert.deepEqual(second.chats, ["job5", "job4"]);
+    assert.deepEqual(second.visitedTabs, ["推荐", "Java(深圳)", "Python(杭州)"]);
+    assert.deepEqual(second.filterHistory, []);
+  } finally {
+    second.close();
+  }
+});
+
+test("停在第一个求职意向上开始时按顺序投完求职意向，不改筛选", async () => {
   const page = await openFakeBoss({
     jobs: [campus(1)],
     tabs: [{ name: "Python(杭州)", jobs: [campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }],
@@ -477,7 +512,7 @@ test("手动选了求职意向再开始时从这个栏目往后投，不改筛�
     const lines = await page.run();
     assert.deepEqual(page.chats, ["job2", "job3"]);
     assert.deepEqual(page.filterHistory, []);
-    assert.ok(hasLog(lines, /从Python\(杭州\)开始/), lines.join("\n"));
+    assert.ok(hasLog(lines, /从求职意向Python\(杭州\)开始，这次不投推荐，投完依次切换到：Java\(深圳\)/), lines.join("\n"));
   } finally {
     page.close();
   }
