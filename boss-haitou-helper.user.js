@@ -178,6 +178,69 @@
   const streakStopMessage = (step) =>
     `页面检查异常：${STREAK_MESSAGES[step]}，已自动停止。可能是网络问题，也可能是 BOSS 改版了；确认页面正常后可重新开始，一直出现请到 GitHub 反馈`;
 
+  // 列表投完但还没到今日目标时，刷新页面换一批岗位接着投。
+  // 刷新前把进度存在 sessionStorage（只在这个标签页有效），刷新后自动继续。
+  // 已打开详情判断过的岗位记在 seen 里，刷新后同一套规则下不再重复打开。
+
+  const KEY = "zdlAutoRefreshV1";
+  // 连续这么多次刷新都没投出岗位就停下，避免一直空刷
+  const MAX_EMPTY_REFRESHES = 3;
+  const MAX_REFRESHES = 30;
+  const MAX_SEEN = 3000;
+  // 刷新后超过这个时间还没接上就不再自动继续（比如用户隔了很久才手动刷新）
+  const RESUME_WINDOW_MS = 2 * 60 * 1000;
+
+  const AutoRefresh = {
+    read() {
+      try {
+        const data = JSON.parse(sessionStorage.getItem(KEY) || "null");
+        return data && typeof data === "object" && Array.isArray(data.seen) ? data : null;
+      } catch (error) {
+        return null;
+      }
+    },
+
+    _write(data) {
+      try {
+        sessionStorage.setItem(KEY, JSON.stringify(data));
+        return true;
+      } catch (error) {
+        return false;
+      }
+    },
+
+    clear() {
+      try { sessionStorage.removeItem(KEY); } catch (error) {}
+    },
+
+    // 刷新后要接着投的进度：账号一致、刚刚刷新过才返回
+    pending(uid) {
+      const chain = this.read();
+      if (!chain?.resumeAt || chain.uid !== uid || Date.now() - chain.resumeAt > RESUME_WINDOW_MS) return null;
+      return chain;
+    },
+
+    // 接上后去掉待继续标记，之后用户自己刷新页面不会再自动开始
+    markResumed(chain) {
+      this._write({ ...chain, resumeAt: 0 });
+    },
+
+    // 列表投完时调用：能刷新就记下进度并返回本次刷新的信息，不该再刷新时返回 null。
+    plan(run, rules) {
+      const prev = run.chain || {};
+      const pageDelivered = run.delivered - (run.chainDelivered || 0);
+      const empty = pageDelivered > 0 ? 0 : (prev.empty || 0) + 1;
+      const refreshes = (prev.refreshes || 0) + 1;
+      if (empty > MAX_EMPTY_REFRESHES || refreshes > MAX_REFRESHES) return { stop: empty > MAX_EMPTY_REFRESHES ? "empty" : "max" };
+      const chain = {
+        uid: run.uid, rules, refreshes, empty, resumeAt: Date.now(),
+        delivered: run.delivered, skips: run.skips,
+        seen: [...run.seen].slice(-MAX_SEEN),
+      };
+      return this._write(chain) ? { refreshes } : { stop: "storage" };
+    },
+  };
+
   // 记录各账号已沟通过的岗位 id，下次直接在粗筛阶段跳过，不再逐个点开。
   const CONTACTED_JOBS_KEY = "zdlContactedJobsV1";
   const CONTACTED_JOBS_LIMIT = 3000;
@@ -4237,7 +4300,9 @@
     ? Array.from(document.querySelectorAll(BOSS.jobCard)).find((card) => ContactedJobs.idOf(card) === jobId) || null
     : null);
 
-  const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id;
+  // seen：自动刷新前已打开详情判断过的岗位，刷新后卡片上的标记没了，按岗位 id 认出来
+  const isHandled = (card, run) => card.dataset.zdlProcessed === run.mark || card.dataset.zdlTimeout === run.id
+    || (run.seen.size > 0 && run.seen.has(ContactedJobs.idOf(card)));
 
   // 开始投递时日志里的规则说明：第一行是摘要，其余行折叠起来，点开看每条规则的完整内容。
   function filterSummary() {
@@ -4268,14 +4333,17 @@
 
   // 列表里没有可投的岗位时，说清楚是投完了还是规则没匹配上。
   function listExhaustedMessage(total, fresh, contacted, rejected) {
-    if (!total) return "当前列表没有岗位，本次结束";
-    if (!fresh) return `当前列表的 ${total} 个岗位都已处理完，本次结束。可以换城市或搜索词继续`;
+    if (!total) return { reason: "当前列表没有岗位", hint: "" };
+    const hint = "可以换城市或搜索词继续";
+    if (!fresh) return { reason: `当前列表的 ${total} 个岗位都已处理完`, hint };
     const reasons = Object.entries(rejected).sort((a, b) => b[1] - a[1]);
     const top = reasons.slice(0, 4).map(([label, n]) => `${label} ${n}`).join("、");
     const ruled = fresh - contacted;
-    if (!ruled) return `列表已到底，剩下的 ${fresh} 个岗位都已沟通过，本次结束。可以换城市或搜索词继续`;
-    return `列表已到底，剩下的 ${ruled} 个新岗位都不符合筛选规则（${top}${reasons.length > 4 ? " 等" : ""}），本次结束。`
-      + "可以在「筛选设置」顶部的预览里看哪条规则挡得最多，或换城市、搜索词继续";
+    if (!ruled) return { reason: `列表已到底，剩下的 ${fresh} 个岗位都已沟通过`, hint };
+    return {
+      reason: `列表已到底，剩下的 ${ruled} 个新岗位都不符合筛选规则（${top}${reasons.length > 4 ? " 等" : ""}）`,
+      hint: "可以在「筛选设置」顶部的预览里看哪条规则挡得最多，或换城市、搜索词继续",
+    };
   }
 
   const Core = {
@@ -4435,8 +4503,7 @@
         const scope = fresh === cards.length ? `共 ${cards.length} 个岗位` : `新加载 ${fresh} 个岗位（列表共 ${cards.length} 个）`;
         this.log(`筛选完成，${scope}，匹配 ${state.jobList.length} 个${contactedNote}`);
         if (!state.jobList.length) {
-          this.log(listExhaustedMessage(cards.length, fresh, skippedContacted, rejected));
-          stopProcess(run);
+          await this.onListExhausted(run, cards.length, listExhaustedMessage(cards.length, fresh, skippedContacted, rejected));
           return;
         }
       }
@@ -4472,12 +4539,14 @@
       if (!detailReady) {
         // 加载超时的岗位本次不再试，下次开始时重试
         cardEl.dataset.zdlTimeout = run.id;
+        if (item.jobId) run.seen.add(item.jobId);
         skip("详情加载超时", "详情加载超时", true);
         this.stopIfBroken(run, "detail");
         return;
       }
       run.guard.ok("detail");
       cardEl.dataset.zdlProcessed = run.mark;
+      if (item.jobId) run.seen.add(item.jobId);
 
       let activeTime = "未知";
       const onlineTag = findInDetail(BOSS.recruiterOnline);
@@ -4667,6 +4736,27 @@
         if (!this.logContactResult(run, result, prefix, "已投递，补投")) return;
       }
       if (Delivery.isCurrent(run)) stopProcess(run);
+    },
+
+    // 当前列表没有可投的岗位了：还没到今日目标就刷新页面换一批接着投，否则结束。
+    async onListExhausted(run, total, { reason, hint }) {
+      const left = Math.min(state.targetCount, CONFIG.DAILY_LIMIT) - state.delivery.dailyCount;
+      const plan = total && left > 0 ? AutoRefresh.plan(run, rulesKey()) : null;
+      if (!plan || plan.stop) {
+        const why = plan?.stop === "empty" ? `，连续 ${MAX_EMPTY_REFRESHES} 次刷新都没有投出新岗位`
+          : plan?.stop === "max" ? "，自动刷新次数已用完" : "";
+        this.log(`${reason}${why}，本次结束。${hint}`);
+        stopProcess(run);
+        return;
+      }
+      this.log(`${reason}，今日还差 ${left} 个，刷新页面换一批岗位继续投递（第 ${plan.refreshes} 次刷新）`);
+      RunStatus.setActivity("即将刷新页面，换一批岗位…");
+      // 留几秒给用户点“停止投递”
+      await this.delay(3000);
+      if (!Delivery.isCurrent(run)) return;
+      run.refreshing = true;
+      stopProcess(run);
+      location.reload();
     },
 
     // 开始投递前检查职位列表能不能读出来，读不出关键信息时不启动。
@@ -4939,7 +5029,24 @@
     await runDelivery({ remedy: items });
   }
 
-  async function runDelivery({ remedy = null } = {}) {
+  // 页面加载后：如果是投递中自动刷新的，等列表和账号就绪后接着投。
+  async function resumeAfterRefresh() {
+    const chain = AutoRefresh.read();
+    if (!chain?.resumeAt) return;
+    Core.log("页面已刷新，等岗位列表加载后继续投递…");
+    const ready = await Core.waitFor(() => state.activeRun || (state.account.id && document.querySelector(BOSS.jobCard)), 30000, 500);
+    if (state.activeRun) return;
+    const pending = ready ? AutoRefresh.pending(state.account.id) : null;
+    if (!pending) {
+      AutoRefresh.clear();
+      Core.log(ready ? "账号已变化或等待太久，没有自动继续投递，可以手动开始" : "岗位列表加载超时，没有自动继续投递，可以手动开始");
+      return;
+    }
+    AutoRefresh.markResumed(pending);
+    await runDelivery({ resume: pending });
+  }
+
+  async function runDelivery({ remedy = null, resume = null } = {}) {
     Delivery.sync();
     if (!state.account.id || state.account.needsReload || state.account.error) {
       showNotification(state.account.error || (state.account.needsReload
@@ -4950,7 +5057,7 @@
       showNotification("请先切换到「职位」页再启动", "error");
       return;
     }
-    if (!remedy && !hasFilterRules()) {
+    if (!remedy && !resume && !hasFilterRules()) {
       const choice = await UI._confirm({
         title: "还没有设置筛选规则",
         message: "现在开始会对列表里的所有岗位发起沟通，包括销售、客服等不相关的岗位。建议先用求职向导生成一套基础规则。",
@@ -4972,7 +5079,16 @@
     const run = {
       uid: state.account.id, id: Math.random().toString(36).slice(2), mark: "",
       started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(), remedy,
+      seen: new Set(), chain: null, chainDelivered: 0, refreshing: false,
     };
+    // 手动开始是新的一次投递；自动刷新后接着投时带上之前的进度
+    if (resume) {
+      run.chain = resume;
+      run.delivered = run.chainDelivered = Number(resume.delivered) || 0;
+      run.skips = { ...resume.skips };
+    } else {
+      AutoRefresh.clear();
+    }
     state.activeRun = run;
     Delivery.render();
     // 浏览器会给后台标签页的定时器限速，投递会明显变慢：切到后台时提醒一次
@@ -5005,15 +5121,19 @@
         }
         if (!Core.checkPageBeforeStart()) return;
         run.mark = `${run.uid}:${rulesKey()}`;
+        if (resume?.rules === rulesKey()) run.seen = new Set(resume.seen);
         state.jobList = [];
         state.currentIndex = 0;
         state.jobIndexOffset = 0;
         run.started = true;
         state.isRunning = true;
         Delivery.render();
-        const startTime = new Date();
-        Core.log(`开始自动海投，时间：${startTime.toLocaleTimeString()}`);
-        Core.log(filterSummary());
+        if (resume) {
+          Core.log(`继续投递（已自动刷新 ${resume.refreshes} 次，本次已投 ${run.delivered} 个）`);
+        } else {
+          Core.log(`开始自动海投，时间：${new Date().toLocaleTimeString()}`);
+          Core.log(filterSummary());
+        }
 
         await Core.startProcessing(run);
       });
@@ -5024,7 +5144,8 @@
     } finally {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       highlightCard(null);
-      if (run.started) {
+      if (!run.refreshing) AutoRefresh.clear();
+      if (run.started && !run.refreshing) {
         Core.logRunSummary(run);
         RunStatus.finish(run.userStopped ? "已停止" : run.failed ? "投递异常" : "投递完成");
       }
@@ -5485,6 +5606,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
       } catch (error) {
         console.warn("新手教程初始化失败:", error);
       }
+      resumeAfterRefresh().catch((error) => console.error("自动继续投递失败:", error));
     } catch (error) {
       console.error("初始化失败:", error);
       showNotification("初始化失败", "error");

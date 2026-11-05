@@ -28,7 +28,8 @@ function cardHtml(j) {
   </li>`;
 }
 
-export async function openFakeBoss({ jobs, storage = {}, detailDelay = 40, detailBroken = false } = {}) {
+// session：预先放进 sessionStorage 的内容（模拟投递中自动刷新后的页面）
+export async function openFakeBoss({ jobs, storage = {}, session = {}, detailDelay = 40, detailBroken = false } = {}) {
   const code = await readFile(OUTPUT_FILE, "utf8");
   const html = `<!doctype html><html><head></head><body>
     <ul class="job-list">${jobs.map(cardHtml).join("")}</ul>
@@ -75,6 +76,7 @@ export async function openFakeBoss({ jobs, storage = {}, detailDelay = 40, detai
 
   const store = { zdlTutorialSeen: "1", ...storage };
   Object.entries(store).forEach(([key, value]) => w.localStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)));
+  Object.entries(session).forEach(([key, value]) => w.sessionStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)));
 
   // 详情区：点卡片后稍等一会儿再换成这个岗位的内容
   const byId = Object.fromEntries(jobs.map((j) => [j.id, { ...j }]));

@@ -236,7 +236,7 @@ test("被细筛误跳过的岗位可以在“可补投”里补投", async () =>
   try {
     const lines = await page.run();
     assert.deepEqual(page.chats, ["job1", "job3"]);
-    assert.ok(hasLog(lines, /可补投复查/), lines.join("\n"));
+    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递/), lines.join("\n"));
     const btn = page.document.querySelector(".zdl-remedy-btn");
     assert.equal(btn.hidden, false);
     assert.equal(btn.textContent, "可补投 1");
@@ -302,6 +302,87 @@ test("详情加载超时的岗位也能补投", async () => {
     assert.equal(rows.length, 3);
     assert.ok(rows.every((row) => row.querySelector(".zdl-remedy-reason").textContent === "详情加载超时"));
     assert.ok(rows.every((row) => !row.querySelector("input").disabled));
+  } finally {
+    page.close();
+  }
+});
+
+// 自动刷新：jsdom 不会真的刷新页面，用“带着 sessionStorage 再打开一个页面”模拟刷新后
+const readChain = (page) => JSON.parse(page.window.sessionStorage.getItem("zdlAutoRefreshV1") || "null");
+const waitLog = async (page, pattern, timeoutMs = 20000) => {
+  const deadline = Date.now() + timeoutMs;
+  while (!page.logs().some((line) => pattern.test(line)) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(page.logs().some((line) => pattern.test(line)), `没等到 ${pattern}\n${page.logs().join("\n")}`);
+};
+
+test("列表投完还没到目标时刷新页面，刷新后自动接着投，判断过的岗位不再打开", async () => {
+  const blocked = { desc: "本岗位不接受实习生" };
+  const storage = { detailBlockedTags: ["不接受实习"] };
+  const first = await openFakeBoss({ jobs: [job(1), job(2, blocked)], storage });
+  let chain;
+  try {
+    const lines = await first.run();
+    assert.deepEqual(first.chats, ["job1"]);
+    assert.ok(hasLog(lines, /今日还差 149 个，刷新页面换一批岗位继续投递（第 1 次刷新）/), lines.join("\n"));
+    assert.ok(!hasLog(lines, /本次共投递/), "刷新前不汇总");
+    assert.ok(first.errors.some((e) => /navigation/i.test(e)), "应调用了页面刷新");
+    chain = readChain(first);
+    assert.equal(chain.refreshes, 1);
+    assert.equal(chain.delivered, 1);
+    assert.deepEqual(chain.seen.sort(), ["job1", "job2"]);
+  } finally {
+    first.close();
+  }
+
+  // 刷新后列表换了一批，job2 还在
+  const second = await openFakeBoss({
+    jobs: [job(2, blocked), job(3), job(4)], storage, session: { zdlAutoRefreshV1: { ...chain, resumeAt: Date.now() } },
+  });
+  try {
+    await waitLog(second, /第 2 次刷新/);
+    assert.deepEqual(second.chats, ["job3", "job4"]);
+    const lines = second.logs();
+    assert.ok(hasLog(lines, /继续投递（已自动刷新 1 次，本次已投 1 个）/), lines.join("\n"));
+    assert.ok(!hasLog(lines, /命中排除词/), "判断过的岗位不应再打开");
+    assert.equal(readChain(second).delivered, 3);
+  } finally {
+    second.close();
+  }
+});
+
+test("连续刷新都没投出岗位时停下并汇总", async () => {
+  const chain = {
+    uid: "12345678", rules: "", refreshes: 3, empty: 3, resumeAt: Date.now(),
+    delivered: 5, skips: { "详情排除\"外包\"": 2 }, seen: [],
+  };
+  const page = await openFakeBoss({
+    jobs: [1, 2].map((i) => job(i)), storage: { zdlCoarseBlockedTags: ["java"] }, session: { zdlAutoRefreshV1: chain },
+  });
+  try {
+    await waitLog(page, /本次共投递/);
+    const lines = page.logs();
+    assert.ok(hasLog(lines, /连续 3 次刷新都没有投出新岗位，本次结束/), lines.join("\n"));
+    assert.ok(hasLog(lines, /本次共投递 5 个，详情页跳过 2 个/), lines.join("\n"));
+    assert.equal(readChain(page), null);
+    assert.ok(!page.errors.some((e) => /navigation/i.test(e)));
+  } finally {
+    page.close();
+  }
+});
+
+test("自动刷新等待中手动停止，不再刷新", async () => {
+  const page = await openFakeBoss({ jobs: [job(1)], storage: { includeTags: ["java"] } });
+  try {
+    const startButton = () => [...page.document.querySelectorAll("button")].find((b) => /开始投递|停止投递/.test(b.textContent));
+    startButton().click();
+    await waitLog(page, /刷新页面换一批岗位/);
+    startButton().click();
+    await page.idle();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(readChain(page), null);
+    assert.ok(!page.errors.some((e) => /navigation/i.test(e)));
   } finally {
     page.close();
   }

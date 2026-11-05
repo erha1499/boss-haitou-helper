@@ -1,5 +1,5 @@
 import { JOBS_PAGE_URL, isJobsPage } from "./config.js";
-import { Core } from "./core.js";
+import { Core, resumeAfterRefresh } from "./core.js";
 import { CURRENT_ACCOUNT_KEY, DELIVERY_STATS_KEY, Delivery } from "./delivery.js";
 import { CONFIG_STORAGE_KEYS, CONFIG_UNDO_KEY, markConfigExternalChanged } from "./settings-store.js";
 import { saveLogEntries, state } from "./state.js";
@@ -46,6 +46,7 @@ async function init() {
     } catch (error) {
       console.warn("新手教程初始化失败:", error);
     }
+    resumeAfterRefresh().catch((error) => console.error("自动继续投递失败:", error));
   } catch (error) {
     console.error("初始化失败:", error);
     showNotification("初始化失败", "error");
