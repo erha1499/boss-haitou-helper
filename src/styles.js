@@ -398,6 +398,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-log-item.zdl-log-key .zdl-log-text{color:var(--zdl-ink);font-weight:500}
 .zdl-log-item.zdl-log-error .zdl-log-text{color:#b91c1c}
 .zdl-log-item.zdl-log-tip .zdl-log-text{color:#b45309}
+.zdl-log-text a{color:#2563eb;word-break:break-all}
 .zdl-log:empty::before{content:"还没有日志，开始投递后会在这里显示每个岗位的结果";display:block;padding:24px 8px;color:var(--zdl-text-4);font-size:12px;text-align:center}
 `;
 

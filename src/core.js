@@ -5,8 +5,10 @@ import { AutoRefresh, MAX_EMPTY_REFRESHES } from "./auto-refresh.js";
 import { CONFIG, RECRUITER_STATUS_OPTIONS, isJobsPage } from "./config.js";
 import { ContactedJobs } from "./contacted.js";
 import { DELIVERY_LOCK_NAME, Delivery } from "./delivery.js";
+import { ExpectTabs } from "./expect-tabs.js";
 import { coarseExplain, coarseRejectReason, hasFilterRules, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
 import { classifyJob, degreeRejectBy } from "./rules/job-type.js";
+import { describeRecommendFilters, recommendFilters } from "./rules/recommend-filter.js";
 import { isSalaryFilterActive } from "./rules/salary.js";
 import { keywordSnippet, matchKeyword } from "./rules/keywords.js";
 import { RunStatus } from "./run-status.js";
@@ -77,9 +79,17 @@ function listExhaustedMessage(total, fresh, contacted, rejected) {
   };
 }
 
+// 列表整个换了（改筛选、切栏目）：清掉初筛结果和计数，按新列表从头来
+function resetJobList() {
+  state.jobList = [];
+  state.currentIndex = 0;
+  state.jobIndexOffset = 0;
+}
+
 export const Core = {
   async startProcessing(run) {
     let roundIndex = 0;
+    await this.prepareTabs(run);
 
     while (Delivery.isCurrent(run)) {
       if (state.delivery.dailyCount >= state.targetCount) {
@@ -108,7 +118,7 @@ export const Core = {
       while (Delivery.isCurrent(run)) {
         if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) break;
         await this.processJobList(run);
-        if (!Delivery.isCurrent(run)) break;
+        if (!Delivery.isCurrent(run) || run.tabSwitched) break;
         if (state.currentIndex >= state.jobList.length && state.jobList.length > 0) break;
         await this.delay(CONFIG.BASIC_INTERVAL);
       }
@@ -119,6 +129,13 @@ export const Core = {
           ? `已达到今日投递目标 ${state.targetCount} 次，自动停止`
           : `今日已投递 ${state.delivery.dailyCount} 次，已达每日上限 ${CONFIG.DAILY_LIMIT}，自动停止`);
         break;
+      }
+
+      // 换了栏目：新列表从头收集
+      if (run.tabSwitched) {
+        run.tabSwitched = false;
+        roundIndex = 0;
+        continue;
       }
 
       state.jobIndexOffset += state.jobList.length;
@@ -247,6 +264,12 @@ export const Core = {
     // 细筛：打开详情后判断
     const item = state.jobList[state.currentIndex];
     const cardEl = item.el;
+    // 列表被 BOSS 整个重新加载过（比如筛选条件晚生效），初筛的结果作废，按新列表重新筛
+    if (!cardEl.isConnected) {
+      this.log("岗位列表已刷新，按新列表重新筛选");
+      resetJobList();
+      return;
+    }
     const cumulativeTotal = state.jobIndexOffset + state.jobList.length;
     const idx = state.jobIndexOffset + state.currentIndex + 1;
     const prefix = `第${idx}/${cumulativeTotal}个，[${item.address}][${item.company}][${item.job}][${item.salary}]`;
@@ -469,8 +492,78 @@ export const Core = {
     if (Delivery.isCurrent(run)) stopProcess(run);
   },
 
+  // 开始投递时看列表上方的栏目：先投「推荐」（按岗位类型设好筛选），投完再依次切到用户的求职意向。
+  // 手动开始时从当前栏目往后投；自动刷新后从「推荐」重新开始。
+  async prepareTabs(run) {
+    let tabs = ExpectTabs.list();
+    if (!tabs.length) return;
+    if (tabs.length === 1 && !run.chain) {
+      this.log(`提示：还没有添加求职意向。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
+        + "添加「期望职位」后，投完「推荐」会自动切到各个求职意向继续投");
+    }
+    let index = ExpectTabs.activeIndex(tabs);
+    if (run.chain || index < 0) {
+      RunStatus.setActivity("正在切换到「推荐」…");
+      await ExpectTabs.select(tabs[0], () => Delivery.isCurrent(run));
+      if (!Delivery.isCurrent(run)) return;
+      tabs = ExpectTabs.list();
+      index = 0;
+    }
+    run.tabs = { names: tabs.map((tab) => tab.name), index, original: null, applied: false };
+    const rest = run.tabs.names.slice(index + 1);
+    if (rest.length) this.log(`从「${run.tabs.names[index]}」开始，投完依次切换到：${rest.map((name) => `「${name}」`).join("")}`);
+    if (index === 0) await this.applyRecommendFilters(run);
+  },
+
+  // 「推荐」按用户定位列岗位，按岗位类型设置帮用户选好求职类型和工作经验，能投的会多一些
+  async applyRecommendFilters(run) {
+    const wanted = recommendFilters(state.jobTypeFilter);
+    const desc = describeRecommendFilters(wanted);
+    if (!desc) return;
+    run.tabs.original = ExpectTabs.readFilters();
+    RunStatus.setActivity("正在设置「推荐」的筛选条件…");
+    run.tabs.applied = await ExpectTabs.applyFilters(wanted, () => Delivery.isCurrent(run));
+    // 改了筛选列表就整个换了，之前初筛的结果不能再用
+    if (run.tabs.applied) resetJobList();
+    if (Delivery.isCurrent(run)) this.log(`「推荐」按岗位类型设置筛选：${desc}`);
+  },
+
+  // 离开「推荐」或结束投递时，把脚本改过的筛选条件改回去（BOSS 切栏目时会带着筛选条件）
+  async restoreRecommendFilters(run, isCurrent) {
+    if (!run.tabs?.applied) return;
+    run.tabs.applied = false;
+    await ExpectTabs.applyFilters(run.tabs.original, isCurrent);
+  },
+
+  // 当前栏目投完了，切到下一个求职意向。切了返回 true，后面没有栏目了返回 false
+  async switchToNextTab(run, reason) {
+    const tabs = run.tabs;
+    if (!tabs) return false;
+    while (tabs.index < tabs.names.length - 1) {
+      const from = tabs.names[tabs.index];
+      tabs.index++;
+      const name = tabs.names[tabs.index];
+      const tab = ExpectTabs.list().find((item) => !item.recommend && item.name === name);
+      if (!tab) {
+        this.log(`没找到求职意向「${name}」，跳过`);
+        continue;
+      }
+      this.log(`「${from}」已投完（${reason}），切换到求职意向「${name}」继续`);
+      RunStatus.setActivity(`正在切换到「${name}」…`);
+      const isCurrent = () => Delivery.isCurrent(run);
+      await this.restoreRecommendFilters(run, isCurrent);
+      if (!isCurrent()) return true;
+      await ExpectTabs.select(tab, isCurrent);
+      resetJobList();
+      run.tabSwitched = true;
+      return true;
+    }
+    return false;
+  },
+
   // 当前列表没有可投的岗位了：还没到今日目标就刷新页面换一批接着投，否则结束。
   async onListExhausted(run, total, { reason, hint }) {
+    if (await this.switchToNextTab(run, reason)) return;
     const left = Math.min(state.targetCount, CONFIG.DAILY_LIMIT) - state.delivery.dailyCount;
     const plan = total && left > 0 ? AutoRefresh.plan(run, rulesKey()) : null;
     if (!plan || plan.stop) {
@@ -653,7 +746,8 @@ export const Core = {
     const item = document.createElement("div");
     item.className = "zdl-log-item";
     const escape = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const rich = (text) => escape(text).replace(/「([^」]{1,60})」/g, '<mark class="zdl-log-hit">$1</mark>');
+    const rich = (text) => escape(text).replace(/「([^」]{1,60})」/g, '<mark class="zdl-log-hit">$1</mark>')
+      .replace(/https:\/\/www\.zhipin\.com\/[^\s<，。；]*/g, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
     const head = logEntry.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
     const time = head ? head[1] : "";
     const message = head ? head[2] : logEntry;
@@ -810,7 +904,7 @@ async function runDelivery({ remedy = null, resume = null } = {}) {
   const run = {
     uid: state.account.id, id: Math.random().toString(36).slice(2), mark: "",
     started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(), remedy,
-    seen: new Set(), chain: null, chainDelivered: 0, refreshing: false,
+    seen: new Set(), chain: null, chainDelivered: 0, refreshing: false, tabs: null, tabSwitched: false,
   };
   // 手动开始是新的一次投递；自动刷新后接着投时带上之前的进度
   if (resume) {
@@ -876,6 +970,9 @@ async function runDelivery({ remedy = null, resume = null } = {}) {
     document.removeEventListener("visibilitychange", onVisibilityChange);
     highlightCard(null);
     if (!run.refreshing) AutoRefresh.clear();
+    if (!run.refreshing && isJobsPage()) {
+      await Core.restoreRecommendFilters(run, () => !state.activeRun || state.activeRun === run).catch(() => {});
+    }
     if (run.started && !run.refreshing) {
       Core.logRunSummary(run);
       RunStatus.finish(run.userStopped ? "已停止" : run.failed ? "投递异常" : "投递完成");

@@ -59,6 +59,20 @@
     cardTags: ".tag-list li",
     cardLink: "a[href*='job_detail']",
 
+    // 职位列表上方的栏目：「推荐」和用户自己加的求职意向（期望职位），选中的带 active
+    recommendTab: ".c-expect-select a.synthesis",
+    expectTab: ".c-expect-select .expect-item",
+    expectTabName: ".text-content",
+    activeClass: "active",
+    // 「推荐」下面的筛选下拉框：按占位文字认出是哪一个，选项是 li，选中的带 active
+    filterBox: ".condition-filter-select",
+    filterBoxLabel: ".current-select",
+    filterOption: ".filter-select-dropdown li",
+    filterBoxes: { jobType: "求职类型", experience: "工作经验" },
+    filterAnyText: "不限",
+    // 没有求职意向时提示用户去这里添加
+    expectSettingsUrl: "https://www.zhipin.com/web/geek/resume?editItem=userinfo",
+
     // 右侧职位详情
     detailDesc: ".job-detail-body .desc",
     detailRoot: ".job-detail-container, .job-detail-box",
@@ -4271,6 +4285,158 @@
     },
   };
 
+  // 职位列表上方的栏目（「推荐」+ 用户的求职意向）和「推荐」下面的筛选下拉框。
+  // 切栏目、改筛选都不刷新页面，只是列表换了，所以每次点完都等列表换掉再继续。
+
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const textOf = (el) => el?.textContent?.trim() || "";
+  const isActive = (el) => el.classList.contains(BOSS.activeClass);
+  const FILTER_KEYS = Object.keys(BOSS.filterBoxes);
+
+  // 列表前几个岗位的 id，用来判断列表有没有换掉
+  const listSignature = () => Array.from(document.querySelectorAll(BOSS.jobCard)).slice(0, 5)
+    .map((card) => ContactedJobs.idOf(card)).join(",");
+
+  // 等列表换掉（或者超时），中途投递停了就不等了。返回列表是否变了。
+  // settle：换掉后再等列表一段时间不再变化（连点几个筛选条件时 BOSS 会连着重新加载几次）
+  async function waitListChange(before, isCurrent, timeoutMs = 10000, settle = false) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!isCurrent()) return false;
+      const now = listSignature();
+      if (now && now !== before) {
+        if (settle) await waitListStable(isCurrent);
+        else await delay(500); // 让列表渲染完
+        return true;
+      }
+      await delay(300);
+    }
+    return false;
+  }
+
+  async function waitListStable(isCurrent, quietMs = 1500, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs;
+    let last = listSignature();
+    let since = Date.now();
+    while (Date.now() < deadline && isCurrent()) {
+      await delay(300);
+      const now = listSignature();
+      if (now !== last) {
+        last = now;
+        since = Date.now();
+      } else if (Date.now() - since >= quietMs) {
+        return;
+      }
+    }
+  }
+
+  const ExpectTabs = {
+    // 栏目：[{ name, el, recommend }]，第一个是「推荐」；页面上没有栏目栏时返回空数组
+    list() {
+      const recommend = document.querySelector(BOSS.recommendTab);
+      if (!recommend) return [];
+      const items = Array.from(document.querySelectorAll(BOSS.expectTab), (el) => ({
+        name: textOf(el.querySelector(BOSS.expectTabName)) || textOf(el), el, recommend: false,
+      }));
+      return [{ name: textOf(recommend) || "推荐", el: recommend, recommend: true }, ...items];
+    },
+
+    activeIndex(tabs = this.list()) {
+      return tabs.findIndex((tab) => isActive(tab.el));
+    },
+
+    // 点栏目并等列表换掉
+    async select(tab, isCurrent) {
+      if (isActive(tab.el)) return true;
+      const before = listSignature();
+      tab.el.click();
+      return waitListChange(before, isCurrent);
+    },
+
+    _box(key) {
+      const label = BOSS.filterBoxes[key];
+      return Array.from(document.querySelectorAll(BOSS.filterBox))
+        .find((box) => textOf(box.querySelector(BOSS.filterBoxLabel)).startsWith(label)) || null;
+    },
+
+    // 当前选中的筛选条件：{ jobType: [...], experience: [...], degree: [...] }，找不到的下拉框不列出
+    readFilters() {
+      const result = {};
+      FILTER_KEYS.forEach((key) => {
+        const box = this._box(key);
+        if (box) {
+          result[key] = Array.from(box.querySelectorAll(BOSS.filterOption))
+            .filter(isActive).map(textOf).filter((text) => text !== BOSS.filterAnyText);
+        }
+      });
+      return result;
+    },
+
+    // 把筛选条件设成 wanted（选项文字数组，空数组表示不限）。求职类型是单选，其余多选（点一下切换选中）。
+    // 返回是否改过。每次点击后 BOSS 都会重新拉列表，所以点得慢一点，最后等列表换掉。
+    async applyFilters(wanted, isCurrent) {
+      const before = listSignature();
+      let clicked = false;
+      for (const key of FILTER_KEYS) {
+        const box = this._box(key);
+        if (!box || !wanted[key]) continue;
+        const options = Array.from(box.querySelectorAll(BOSS.filterOption));
+        const find = (text) => options.find((option) => textOf(option) === text);
+        const target = wanted[key].filter((text) => find(text));
+        const current = options.filter(isActive).map(textOf).filter((text) => text !== BOSS.filterAnyText);
+        if (target.length === current.length && target.every((text) => current.includes(text))) continue;
+        let clicks;
+        if (!target.length) clicks = [find(BOSS.filterAnyText)];
+        else if (key === "jobType") clicks = [find(target[0])];
+        else clicks = [...target.filter((t) => !current.includes(t)), ...current.filter((t) => !target.includes(t))].map(find);
+        for (const option of clicks.filter(Boolean)) {
+          if (!isCurrent()) return clicked;
+          option.click();
+          clicked = true;
+          await delay(CONFIG.BASIC_INTERVAL);
+        }
+      }
+      if (clicked) await waitListChange(before, isCurrent, 6000, true);
+      return clicked;
+    },
+  };
+
+  // 「推荐」栏目按用户定位列岗位，不相关的很多。投「推荐」前按岗位类型设置帮用户选好 BOSS 自带的筛选条件，
+  // 让列表里能投的岗位多一些。只在条件明确时才选，拿不准的保持“不限”，剩下的交给脚本自己的规则。
+  // 薪资不设：BOSS 的薪资档位和脚本按岗位类型分开的薪资规则对不上。
+  // 学历不设：BOSS 选了学历就只列出写着这些学历的岗位，“学历不限”的岗位会被筛掉，交给脚本自己判断。
+
+  // BOSS 下拉框里的选项文字
+  const REC_EXPERIENCE = ["在校生", "应届生", "经验不限", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
+  const YEARS_OPTIONS = { y0_1: ["1年以内"], y1_3: ["1-3年"], y3_5: ["3-5年"], y5p: ["5-10年", "10年以上"], none: [] };
+
+  // filter 为 normalizeJobTypeFilter 的结果。返回要选的选项文字，空数组表示不限：
+  // { jobType: [] | ["实习"] | ["全职"], experience: [...] }
+  function recommendFilters({ types, years }) {
+    const intern = types.includes("intern");
+    const campus = types.includes("campus");
+    const social = types.includes("social");
+    // 求职类型是单选：只投实习选“实习”，不投实习选“全职”，都投就不限
+    const jobType = intern && !campus && !social ? ["实习"] : !intern && types.length ? ["全职"] : [];
+
+    // 工作经验多选。“经验不限”的岗位脚本总会收集，所以总要带上
+    const exp = new Set(["经验不限"]);
+    // 实习岗的经验一栏常写“在校/应届”，也有写“1年以内”的
+    if (intern) ["在校生", "应届生", "1年以内"].forEach((x) => exp.add(x));
+    if (campus) ["在校生", "应届生"].forEach((x) => exp.add(x));
+    if (social) years.forEach((y) => (YEARS_OPTIONS[y] || []).forEach((x) => exp.add(x)));
+    const experience = !types.length || exp.size >= REC_EXPERIENCE.length ? [] : REC_EXPERIENCE.filter((x) => exp.has(x));
+    return { jobType, experience };
+  }
+
+  // 日志里的说明，比如“求职类型 实习 · 工作经验 在校生/应届生/经验不限/1年以内”
+  function describeRecommendFilters({ jobType, experience }) {
+    return [
+      jobType.length ? `求职类型 ${jobType.join("/")}` : "",
+      experience.length ? `工作经验 ${experience.join("/")}` : "",
+    ].filter(Boolean).join(" · ");
+  }
+
   function showNotification(message, type = "success") {
     const notification = document.createElement("div");
     notification.className = `zdl-notify ${type === "success" ? "success" : "error"}`;
@@ -4346,9 +4512,17 @@
     };
   }
 
+  // 列表整个换了（改筛选、切栏目）：清掉初筛结果和计数，按新列表从头来
+  function resetJobList() {
+    state.jobList = [];
+    state.currentIndex = 0;
+    state.jobIndexOffset = 0;
+  }
+
   const Core = {
     async startProcessing(run) {
       let roundIndex = 0;
+      await this.prepareTabs(run);
 
       while (Delivery.isCurrent(run)) {
         if (state.delivery.dailyCount >= state.targetCount) {
@@ -4377,7 +4551,7 @@
         while (Delivery.isCurrent(run)) {
           if (state.delivery.dailyCount >= state.targetCount || state.delivery.dailyCount >= CONFIG.DAILY_LIMIT) break;
           await this.processJobList(run);
-          if (!Delivery.isCurrent(run)) break;
+          if (!Delivery.isCurrent(run) || run.tabSwitched) break;
           if (state.currentIndex >= state.jobList.length && state.jobList.length > 0) break;
           await this.delay(CONFIG.BASIC_INTERVAL);
         }
@@ -4388,6 +4562,13 @@
             ? `已达到今日投递目标 ${state.targetCount} 次，自动停止`
             : `今日已投递 ${state.delivery.dailyCount} 次，已达每日上限 ${CONFIG.DAILY_LIMIT}，自动停止`);
           break;
+        }
+
+        // 换了栏目：新列表从头收集
+        if (run.tabSwitched) {
+          run.tabSwitched = false;
+          roundIndex = 0;
+          continue;
         }
 
         state.jobIndexOffset += state.jobList.length;
@@ -4516,6 +4697,12 @@
       // 细筛：打开详情后判断
       const item = state.jobList[state.currentIndex];
       const cardEl = item.el;
+      // 列表被 BOSS 整个重新加载过（比如筛选条件晚生效），初筛的结果作废，按新列表重新筛
+      if (!cardEl.isConnected) {
+        this.log("岗位列表已刷新，按新列表重新筛选");
+        resetJobList();
+        return;
+      }
       const cumulativeTotal = state.jobIndexOffset + state.jobList.length;
       const idx = state.jobIndexOffset + state.currentIndex + 1;
       const prefix = `第${idx}/${cumulativeTotal}个，[${item.address}][${item.company}][${item.job}][${item.salary}]`;
@@ -4738,8 +4925,78 @@
       if (Delivery.isCurrent(run)) stopProcess(run);
     },
 
+    // 开始投递时看列表上方的栏目：先投「推荐」（按岗位类型设好筛选），投完再依次切到用户的求职意向。
+    // 手动开始时从当前栏目往后投；自动刷新后从「推荐」重新开始。
+    async prepareTabs(run) {
+      let tabs = ExpectTabs.list();
+      if (!tabs.length) return;
+      if (tabs.length === 1 && !run.chain) {
+        this.log(`提示：还没有添加求职意向。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
+          + "添加「期望职位」后，投完「推荐」会自动切到各个求职意向继续投");
+      }
+      let index = ExpectTabs.activeIndex(tabs);
+      if (run.chain || index < 0) {
+        RunStatus.setActivity("正在切换到「推荐」…");
+        await ExpectTabs.select(tabs[0], () => Delivery.isCurrent(run));
+        if (!Delivery.isCurrent(run)) return;
+        tabs = ExpectTabs.list();
+        index = 0;
+      }
+      run.tabs = { names: tabs.map((tab) => tab.name), index, original: null, applied: false };
+      const rest = run.tabs.names.slice(index + 1);
+      if (rest.length) this.log(`从「${run.tabs.names[index]}」开始，投完依次切换到：${rest.map((name) => `「${name}」`).join("")}`);
+      if (index === 0) await this.applyRecommendFilters(run);
+    },
+
+    // 「推荐」按用户定位列岗位，按岗位类型设置帮用户选好求职类型和工作经验，能投的会多一些
+    async applyRecommendFilters(run) {
+      const wanted = recommendFilters(state.jobTypeFilter);
+      const desc = describeRecommendFilters(wanted);
+      if (!desc) return;
+      run.tabs.original = ExpectTabs.readFilters();
+      RunStatus.setActivity("正在设置「推荐」的筛选条件…");
+      run.tabs.applied = await ExpectTabs.applyFilters(wanted, () => Delivery.isCurrent(run));
+      // 改了筛选列表就整个换了，之前初筛的结果不能再用
+      if (run.tabs.applied) resetJobList();
+      if (Delivery.isCurrent(run)) this.log(`「推荐」按岗位类型设置筛选：${desc}`);
+    },
+
+    // 离开「推荐」或结束投递时，把脚本改过的筛选条件改回去（BOSS 切栏目时会带着筛选条件）
+    async restoreRecommendFilters(run, isCurrent) {
+      if (!run.tabs?.applied) return;
+      run.tabs.applied = false;
+      await ExpectTabs.applyFilters(run.tabs.original, isCurrent);
+    },
+
+    // 当前栏目投完了，切到下一个求职意向。切了返回 true，后面没有栏目了返回 false
+    async switchToNextTab(run, reason) {
+      const tabs = run.tabs;
+      if (!tabs) return false;
+      while (tabs.index < tabs.names.length - 1) {
+        const from = tabs.names[tabs.index];
+        tabs.index++;
+        const name = tabs.names[tabs.index];
+        const tab = ExpectTabs.list().find((item) => !item.recommend && item.name === name);
+        if (!tab) {
+          this.log(`没找到求职意向「${name}」，跳过`);
+          continue;
+        }
+        this.log(`「${from}」已投完（${reason}），切换到求职意向「${name}」继续`);
+        RunStatus.setActivity(`正在切换到「${name}」…`);
+        const isCurrent = () => Delivery.isCurrent(run);
+        await this.restoreRecommendFilters(run, isCurrent);
+        if (!isCurrent()) return true;
+        await ExpectTabs.select(tab, isCurrent);
+        resetJobList();
+        run.tabSwitched = true;
+        return true;
+      }
+      return false;
+    },
+
     // 当前列表没有可投的岗位了：还没到今日目标就刷新页面换一批接着投，否则结束。
     async onListExhausted(run, total, { reason, hint }) {
+      if (await this.switchToNextTab(run, reason)) return;
       const left = Math.min(state.targetCount, CONFIG.DAILY_LIMIT) - state.delivery.dailyCount;
       const plan = total && left > 0 ? AutoRefresh.plan(run, rulesKey()) : null;
       if (!plan || plan.stop) {
@@ -4922,7 +5179,8 @@
       const item = document.createElement("div");
       item.className = "zdl-log-item";
       const escape = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const rich = (text) => escape(text).replace(/「([^」]{1,60})」/g, '<mark class="zdl-log-hit">$1</mark>');
+      const rich = (text) => escape(text).replace(/「([^」]{1,60})」/g, '<mark class="zdl-log-hit">$1</mark>')
+        .replace(/https:\/\/www\.zhipin\.com\/[^\s<，。；]*/g, (url) => `<a href="${url}" target="_blank" rel="noopener">${url}</a>`);
       const head = logEntry.match(/^\[([^\]]+)\]\s*([\s\S]*)$/);
       const time = head ? head[1] : "";
       const message = head ? head[2] : logEntry;
@@ -5079,7 +5337,7 @@
     const run = {
       uid: state.account.id, id: Math.random().toString(36).slice(2), mark: "",
       started: false, cancelled: false, delivered: 0, skips: {}, guard: createStreakGuard(), remedy,
-      seen: new Set(), chain: null, chainDelivered: 0, refreshing: false,
+      seen: new Set(), chain: null, chainDelivered: 0, refreshing: false, tabs: null, tabSwitched: false,
     };
     // 手动开始是新的一次投递；自动刷新后接着投时带上之前的进度
     if (resume) {
@@ -5145,6 +5403,9 @@
       document.removeEventListener("visibilitychange", onVisibilityChange);
       highlightCard(null);
       if (!run.refreshing) AutoRefresh.clear();
+      if (!run.refreshing && isJobsPage()) {
+        await Core.restoreRecommendFilters(run, () => !state.activeRun || state.activeRun === run).catch(() => {});
+      }
       if (run.started && !run.refreshing) {
         Core.logRunSummary(run);
         RunStatus.finish(run.userStopped ? "已停止" : run.failed ? "投递异常" : "投递完成");
@@ -5557,6 +5818,7 @@ li.job-card-box.zdl-current-card{outline:2px solid var(--zdl-primary);outline-of
 .zdl-log-item.zdl-log-key .zdl-log-text{color:var(--zdl-ink);font-weight:500}
 .zdl-log-item.zdl-log-error .zdl-log-text{color:#b91c1c}
 .zdl-log-item.zdl-log-tip .zdl-log-text{color:#b45309}
+.zdl-log-text a{color:#2563eb;word-break:break-all}
 .zdl-log:empty::before{content:"还没有日志，开始投递后会在这里显示每个岗位的结果";display:block;padding:24px 8px;color:var(--zdl-text-4);font-size:12px;text-align:center}
 `;
 

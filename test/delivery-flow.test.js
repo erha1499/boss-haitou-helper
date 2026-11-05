@@ -387,3 +387,111 @@ test("自动刷新等待中手动停止，不再刷新", async () => {
     page.close();
   }
 });
+
+// 栏目：先投「推荐」（按岗位类型设好筛选），投完切到各个求职意向，离开「推荐」前把筛选改回去
+const campus = (i, extra) => job(i, { tags: ["在校/应届", "本科"], ...extra });
+const campusFilter = { zdlJobTypeFilter: { types: ["campus"], degree: "bachelor" } };
+
+test("先投「推荐」再依次切到求职意向，「推荐」的筛选按岗位类型设置、离开前改回去", async () => {
+  const page = await openFakeBoss({
+    jobs: [campus(1)],
+    tabs: [{ name: "Python(杭州)", jobs: [campus(1), campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }],
+    storage: campusFilter,
+  });
+  try {
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job1", "job2", "job3"]);
+    assert.deepEqual(page.visitedTabs, ["推荐", "Python(杭州)", "Java(深圳)"]);
+    assert.ok(hasLog(lines, /从推荐开始，投完依次切换到：Python\(杭州\)Java\(深圳\)/), lines.join("\n"));
+    assert.ok(hasLog(lines, /推荐按岗位类型设置筛选：求职类型 全职 · 工作经验 在校生\/应届生\/经验不限$/), lines.join("\n"));
+    assert.ok(hasLog(lines, /^推荐已投完（当前列表的 1 个岗位都已处理完），切换到求职意向Python\(杭州\)继续/), lines.join("\n"));
+    assert.ok(hasLog(lines, /^Python\(杭州\)已投完（.*），切换到求职意向Java\(深圳\)继续/), lines.join("\n"));
+    // 所有栏目投完才刷新页面
+    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递/), lines.join("\n"));
+    assert.ok(page.filterHistory.includes("工作经验:应届生"), page.filterHistory.join(","));
+    // 学历不选：BOSS 选了学历会把“学历不限”的岗位筛掉
+    assert.ok(!page.filterHistory.some((x) => x.startsWith("学历要求")), page.filterHistory.join(","));
+    assert.deepEqual(page.filters(), { 求职类型: [], 工作经验: [], 学历要求: [] });
+  } finally {
+    page.close();
+  }
+});
+
+test("「推荐」设好筛选后按新列表初筛，不用设筛选前的列表", async () => {
+  const page = await openFakeBoss({
+    jobs: [campus(91), campus(92)], filteredJobs: [campus(1), campus(2)],
+    tabs: [], storage: { ...campusFilter, zdlTargetCount: "2" },
+  });
+  try {
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job1", "job2"]);
+    assert.ok(hasLog(lines, /筛选完成，共 2 个岗位，匹配 2 个/), lines.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("投到一半列表被重新加载时，丢掉旧的初筛结果按新列表重新筛", async () => {
+  const page = await openFakeBoss({ jobs: [job(1), job(2), job(3)], tabs: [], storage: { includeTags: ["java"] } });
+  try {
+    // 第一次沟通后 BOSS 把列表整个重新渲染了一遍（岗位一样，节点全是新的）
+    let reloaded = false;
+    page.document.querySelector("a.op-btn-chat").addEventListener("click", () => {
+      if (reloaded) return;
+      reloaded = true;
+      page.document.querySelector(".synthesis").click();
+    });
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job1", "job2", "job3"]);
+    assert.ok(hasLog(lines, /岗位列表已刷新，按新列表重新筛选/), lines.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("在「推荐」投满目标后也把筛选改回去", async () => {
+  const page = await openFakeBoss({
+    jobs: [campus(1), campus(2)], tabs: [{ name: "Python(杭州)", jobs: [campus(3)] }],
+    storage: { ...campusFilter, zdlTargetCount: "1" },
+  });
+  try {
+    await page.run();
+    assert.deepEqual(page.chats, ["job1"]);
+    assert.deepEqual(page.visitedTabs, ["推荐"]);
+    assert.ok(page.filterHistory.length > 0);
+    assert.deepEqual(page.filters(), { 求职类型: [], 工作经验: [], 学历要求: [] });
+  } finally {
+    page.close();
+  }
+});
+
+test("手动选了求职意向再开始时从这个栏目往后投，不改筛选", async () => {
+  const page = await openFakeBoss({
+    jobs: [campus(1)],
+    tabs: [{ name: "Python(杭州)", jobs: [campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }],
+    storage: campusFilter,
+  });
+  try {
+    page.document.querySelectorAll(".expect-item")[0].click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job2", "job3"]);
+    assert.deepEqual(page.filterHistory, []);
+    assert.ok(hasLog(lines, /从Python\(杭州\)开始/), lines.join("\n"));
+  } finally {
+    page.close();
+  }
+});
+
+test("没有求职意向时提示去添加期望职位，不打断投递", async () => {
+  const page = await openFakeBoss({ jobs: [job(1), job(2)], tabs: [], storage: { includeTags: ["java"] } });
+  try {
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job1", "job2"]);
+    assert.ok(hasLog(lines, /还没有添加求职意向/), lines.join("\n"));
+    const link = page.document.querySelector('#pro-log a[href="https://www.zhipin.com/web/geek/resume?editItem=userinfo"]');
+    assert.ok(link, "提示里应有可点的链接");
+  } finally {
+    page.close();
+  }
+});

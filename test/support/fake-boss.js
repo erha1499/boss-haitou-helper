@@ -28,10 +28,28 @@ function cardHtml(j) {
   </li>`;
 }
 
+// 列表上方的栏目和「推荐」的筛选下拉框（tabs 不传就没有栏目栏）
+const FILTER_OPTIONS = {
+  求职类型: ["不限", "全职", "兼职", "实习"],
+  工作经验: ["不限", "在校生", "应届生", "经验不限", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"],
+  学历要求: ["不限", "初中及以下", "中专/中技", "高中", "大专", "本科", "硕士", "博士"],
+};
+function tabsHtml(tabs) {
+  if (!tabs) return "";
+  const items = tabs.map((t) => `<a href="javascript:;" class="expect-item"><span class="text-content">${esc(t.name)}</span></a>`).join("");
+  const boxes = Object.entries(FILTER_OPTIONS).map(([label, options]) => `<div class="condition-filter-select">
+    <div class="current-select"><span class="placeholder-text">${label}</span></div>
+    <div class="filter-select-dropdown"><ul>${options.map((o) => `<li>${esc(o)}</li>`).join("")}</ul></div></div>`).join("");
+  return `<div class="c-expect-select"><a href="javascript:;" class="synthesis active">推荐</a>
+    <div class="expect-list">${items}</div></div><div class="filter-condition">${boxes}</div>`;
+}
+
 // session：预先放进 sessionStorage 的内容（模拟投递中自动刷新后的页面）
-export async function openFakeBoss({ jobs, storage = {}, session = {}, detailDelay = 40, detailBroken = false } = {}) {
+// tabs：[{ name, jobs }] 用户的求职意向，jobs 是点这个栏目后列表里的岗位；“推荐”栏目的岗位是 jobs
+// filteredJobs：「推荐」选了筛选条件后列表里的岗位，不传就还是 jobs
+export async function openFakeBoss({ jobs, filteredJobs = null, tabs = null, storage = {}, session = {}, detailDelay = 40, detailBroken = false } = {}) {
   const code = await readFile(OUTPUT_FILE, "utf8");
-  const html = `<!doctype html><html><head></head><body>
+  const html = `<!doctype html><html><head></head><body>${tabsHtml(tabs)}
     <ul class="job-list">${jobs.map(cardHtml).join("")}</ul>
     <div class="job-detail-container"><div class="job-detail-box">
       <span class="job-name"></span><ul class="tag-list"></ul>
@@ -79,7 +97,7 @@ export async function openFakeBoss({ jobs, storage = {}, session = {}, detailDel
   Object.entries(session).forEach(([key, value]) => w.sessionStorage.setItem(key, typeof value === "string" ? value : JSON.stringify(value)));
 
   // 详情区：点卡片后稍等一会儿再换成这个岗位的内容
-  const byId = Object.fromEntries(jobs.map((j) => [j.id, { ...j }]));
+  const byId = Object.fromEntries([...jobs, ...(filteredJobs || []), ...(tabs || []).flatMap((t) => t.jobs)].map((j) => [j.id, { ...j }]));
   const detail = doc.querySelector(".job-detail-box");
   const chatBtn = doc.querySelector("a.op-btn-chat");
   let current = null;
@@ -92,12 +110,47 @@ export async function openFakeBoss({ jobs, storage = {}, session = {}, detailDel
     detail.querySelector(".boss-info-attr").textContent = j.recruiter;
     chatBtn.textContent = j.button;
   };
-  doc.querySelectorAll("li.job-card-box").forEach((card) => {
+  const bindCards = () => doc.querySelectorAll("li.job-card-box").forEach((card) => {
     card.addEventListener("click", () => {
       if (detailBroken) return;
       w.setTimeout(() => showDetail(byId[card.dataset.id]), detailDelay);
     });
   });
+  bindCards();
+
+  // 栏目：点了换列表；筛选：求职类型单选，其余多选，点“不限”清空。记下当前选中的筛选条件
+  const visitedTabs = ["推荐"];
+  const filterHistory = [];
+  if (tabs) {
+    const list = doc.querySelector(".job-list");
+    const tabEls = [doc.querySelector(".synthesis"), ...doc.querySelectorAll(".expect-item")];
+    const tabJobs = [jobs, ...tabs.map((t) => t.jobs)];
+    const anyFilter = () => doc.querySelector(".condition-filter-select li.active") !== null;
+    const render = (list_) => w.setTimeout(() => { list.innerHTML = list_().map(cardHtml).join(""); bindCards(); }, 60);
+    const recommendJobs = () => (anyFilter() && filteredJobs ? filteredJobs : jobs);
+    tabEls.forEach((el, i) => el.addEventListener("click", () => {
+      tabEls.forEach((other) => other.classList.toggle("active", other === el));
+      visitedTabs.push(i ? tabs[i - 1].name : "推荐");
+      render(() => (i ? tabJobs[i] : recommendJobs()));
+    }));
+    doc.querySelectorAll(".condition-filter-select").forEach((box) => {
+      const label = box.querySelector(".placeholder-text").textContent;
+      const lis = [...box.querySelectorAll("li")];
+      lis.forEach((li) => li.addEventListener("click", () => {
+        const text = li.textContent.trim();
+        if (text === "不限") lis.forEach((x) => x.classList.remove("active"));
+        else if (label === "求职类型") lis.forEach((x) => x.classList.toggle("active", x === li && !li.classList.contains("active")));
+        else li.classList.toggle("active");
+        filterHistory.push(`${label}:${text}`);
+        // 和 BOSS 一样：改了筛选，列表整个重新加载（筛选会带到其他栏目，这里只模拟「推荐」）
+        if (tabEls[0].classList.contains("active")) render(recommendJobs);
+      }));
+    });
+  }
+  const filters = () => Object.fromEntries([...doc.querySelectorAll(".condition-filter-select")].map((box) => [
+    box.querySelector(".placeholder-text").textContent,
+    [...box.querySelectorAll("li.active")].map((li) => li.textContent.trim()),
+  ]));
 
   const chats = [];
   chatBtn.addEventListener("click", () => {
@@ -138,7 +191,7 @@ export async function openFakeBoss({ jobs, storage = {}, session = {}, detailDel
   await waitUntil(() => startButton());
 
   return {
-    window: w, document: doc, errors, chats, logs,
+    window: w, document: doc, errors, chats, logs, visitedTabs, filterHistory, filters,
     // 点“开始投递”并等这次投递结束。没设规则时会先弹确认框，默认点“仍然开始”；
     // noRulesChoice 传按钮文字可以点别的，传 null 表示不处理（留着确认框）。
     async run({ noRulesChoice = "仍然开始" } = {}) {
