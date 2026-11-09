@@ -388,26 +388,16 @@ test("自动刷新等待中手动停止，不再刷新", async () => {
   }
 });
 
-// 栏目：先投「推荐」（按岗位类型设好筛选），投完切到各个求职意向，离开「推荐」前把筛选改回去
+// 栏目：有求职意向时只投求职意向（不投「推荐」）；没有求职意向时只投「推荐」，按岗位类型设好筛选，结束时改回去
 const campus = (i, extra) => job(i, { tags: ["在校/应届", "本科"], ...extra });
 const campusFilter = { zdlJobTypeFilter: { types: ["campus"], degree: "bachelor" } };
 
-test("先投「推荐」再依次切到求职意向，「推荐」的筛选按岗位类型设置、离开前改回去", async () => {
-  const page = await openFakeBoss({
-    jobs: [campus(1)],
-    tabs: [{ name: "Python(杭州)", jobs: [campus(1), campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }],
-    storage: campusFilter,
-  });
+test("没有求职意向时只投「推荐」，筛选按岗位类型设置（不设学历），投满目标后改回去", async () => {
+  const page = await openFakeBoss({ jobs: [campus(1), campus(2)], tabs: [], storage: { ...campusFilter, zdlTargetCount: "1" } });
   try {
     const lines = await page.run();
-    assert.deepEqual(page.chats, ["job1", "job2", "job3"]);
-    assert.deepEqual(page.visitedTabs, ["推荐", "Python(杭州)", "Java(深圳)"]);
-    assert.ok(hasLog(lines, /从推荐开始，投完依次切换到：Python\(杭州\)Java\(深圳\)/), lines.join("\n"));
+    assert.deepEqual(page.chats, ["job1"]);
     assert.ok(hasLog(lines, /推荐按岗位类型设置筛选：求职类型 全职 · 工作经验 在校生\/应届生\/经验不限$/), lines.join("\n"));
-    assert.ok(hasLog(lines, /^推荐已投完（当前列表的 1 个岗位都已处理完），切换到求职意向Python\(杭州\)继续/), lines.join("\n"));
-    assert.ok(hasLog(lines, /^Python\(杭州\)已投完（.*），切换到求职意向Java\(深圳\)继续/), lines.join("\n"));
-    // 所有栏目投完才刷新页面
-    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递/), lines.join("\n"));
     assert.ok(page.filterHistory.includes("工作经验:应届生"), page.filterHistory.join(","));
     // 学历不选：BOSS 选了学历会把“学历不限”的岗位筛掉
     assert.ok(!page.filterHistory.some((x) => x.startsWith("学历要求")), page.filterHistory.join(","));
@@ -449,23 +439,26 @@ test("投到一半列表被重新加载时，丢掉旧的初筛结果按新列�
   }
 });
 
-test("在「推荐」投满目标后也把筛选改回去", async () => {
+test("有求职意向时不投「推荐」：停在「推荐」上开始就切到第一个求职意向，依次投完才刷新，不改求职类型等筛选", async () => {
   const page = await openFakeBoss({
-    jobs: [campus(1), campus(2)], tabs: [{ name: "Python(杭州)", jobs: [campus(3)] }],
-    storage: { ...campusFilter, zdlTargetCount: "1" },
+    jobs: [campus(1)],
+    tabs: [{ name: "Python(杭州)", jobs: [campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }],
+    storage: campusFilter,
   });
   try {
-    await page.run();
-    assert.deepEqual(page.chats, ["job1"]);
-    assert.deepEqual(page.visitedTabs, ["推荐"]);
-    assert.ok(page.filterHistory.length > 0);
-    assert.deepEqual(page.filters(), { 求职类型: [], 工作经验: [], 学历要求: [] });
+    const lines = await page.run();
+    assert.deepEqual(page.chats, ["job2", "job3"]);
+    assert.deepEqual(page.visitedTabs, ["推荐", "Python(杭州)", "Java(深圳)"]);
+    assert.deepEqual(page.filterHistory, []);
+    assert.ok(hasLog(lines, /只投求职意向，不投推荐。从Python\(杭州\)开始，投完依次切换到：Java\(深圳\)/), lines.join("\n"));
+    assert.ok(hasLog(lines, /^Python\(杭州\)已投完（.*），切换到求职意向Java\(深圳\)继续/), lines.join("\n"));
+    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递（第 1 次刷新）/), lines.join("\n"));
   } finally {
     page.close();
   }
 });
 
-test("停在求职意向上开始时不投「推荐」，从这个求职意向开始把所有求职意向投完才刷新，刷新后还从这里开始", async () => {
+test("停在某个求职意向上开始时从它开始，绕回前面的求职意向，刷新后还从这里开始", async () => {
   const tabs = [{ name: "Python(杭州)", jobs: [campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }];
   const first = await openFakeBoss({ jobs: [campus(1)], tabs, storage: campusFilter });
   let chain;
@@ -475,17 +468,14 @@ test("停在求职意向上开始时不投「推荐」，从这个求职意向�
     const lines = await first.run();
     assert.deepEqual(first.chats, ["job3", "job2"]);
     assert.deepEqual(first.visitedTabs, ["推荐", "Java(深圳)", "Python(杭州)"]);
-    assert.deepEqual(first.filterHistory, []);
-    assert.ok(hasLog(lines, /从求职意向Java\(深圳\)开始，这次不投推荐，投完依次切换到：Python\(杭州\)/), lines.join("\n"));
-    assert.ok(hasLog(lines, /^Java\(深圳\)已投完（.*），切换到求职意向Python\(杭州\)继续/), lines.join("\n"));
-    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递（第 1 次刷新）/), lines.join("\n"));
+    assert.ok(hasLog(lines, /从Java\(深圳\)开始，投完依次切换到：Python\(杭州\)/), lines.join("\n"));
     chain = readChain(first);
     assert.equal(chain.startTab, "Java(深圳)");
   } finally {
     first.close();
   }
 
-  // 刷新后页面回到「推荐」，脚本切回 Java(深圳) 重新来一遍，仍然不投「推荐」
+  // 刷新后页面回到「推荐」，脚本切回 Java(深圳) 重新来一遍
   const second = await openFakeBoss({
     jobs: [campus(1)], tabs: [{ name: "Python(杭州)", jobs: [campus(4)] }, { name: "Java(深圳)", jobs: [campus(5)] }],
     storage: campusFilter, session: { zdlAutoRefreshV1: { ...chain, resumeAt: Date.now() } },
@@ -494,25 +484,47 @@ test("停在求职意向上开始时不投「推荐」，从这个求职意向�
     await waitLog(second, /第 2 次刷新/);
     assert.deepEqual(second.chats, ["job5", "job4"]);
     assert.deepEqual(second.visitedTabs, ["推荐", "Java(深圳)", "Python(杭州)"]);
-    assert.deepEqual(second.filterHistory, []);
   } finally {
     second.close();
   }
 });
 
-test("停在第一个求职意向上开始时按顺序投完求职意向，不改筛选", async () => {
+test("每个求职意向按选中的公司行业 3 个一批依次筛选，都投完后改回原来的行业再刷新", async () => {
   const page = await openFakeBoss({
-    jobs: [campus(1)],
-    tabs: [{ name: "Python(杭州)", jobs: [campus(2)] }, { name: "Java(深圳)", jobs: [campus(3)] }],
-    storage: campusFilter,
+    jobs: [job(9, { industry: "银行" })],
+    tabs: [
+      { name: "Python(杭州)", jobs: [job(1, { industry: "互联网" }), job(2, { industry: "游戏" }), job(3, { industry: "银行" })] },
+      { name: "Java(深圳)", jobs: [job(4, { industry: "游戏" }), job(5, { industry: "计算机软件" })] },
+    ],
+    storage: { includeTags: ["java"], zdlIndustries: ["游戏", "互联网", "电子商务", "计算机软件"] },
   });
   try {
-    page.document.querySelectorAll(".expect-item")[0].click();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // 用户自己在页面上选了“银行”，投完要改回来
+    [...page.document.querySelectorAll(".condition-industry-select a")].find((a) => a.textContent === "银行").click();
+    await new Promise((resolve) => setTimeout(resolve, 100));
     const lines = await page.run();
-    assert.deepEqual(page.chats, ["job2", "job3"]);
-    assert.deepEqual(page.filterHistory, []);
-    assert.ok(hasLog(lines, /从求职意向Python\(杭州\)开始，这次不投推荐，投完依次切换到：Java\(深圳\)/), lines.join("\n"));
+    assert.deepEqual(page.chats, ["job1", "job2", "job5", "job4"]);
+    assert.ok(hasLog(lines, /每个栏目按公司行业分 2 批筛选：互联网、电子商务、计算机软件游戏/), lines.join("\n"));
+    assert.ok(hasLog(lines, /^Python\(杭州\)行业互联网、电子商务、计算机软件已投完（.*），换行业游戏继续/), lines.join("\n"));
+    assert.ok(hasLog(lines, /^Python\(杭州\)行业游戏已投完（.*），切换到求职意向Java\(深圳\)继续/), lines.join("\n"));
+    assert.ok(hasLog(lines, /刷新页面换一批岗位继续投递/), lines.join("\n"));
+    assert.ok(!page.industryHistory.some((x) => x.startsWith("拒绝")), page.industryHistory.join(","));
+    assert.deepEqual(page.industries(), ["银行"]);
+  } finally {
+    page.close();
+  }
+});
+
+test("停止投递时把公司行业改回原来的", async () => {
+  const page = await openFakeBoss({
+    jobs: [job(9)],
+    tabs: [{ name: "Python(杭州)", jobs: [job(1, { industry: "游戏" }), job(2, { industry: "游戏" })] }],
+    storage: { includeTags: ["java"], zdlIndustries: ["游戏"], zdlTargetCount: "1" },
+  });
+  try {
+    await page.run();
+    assert.deepEqual(page.chats, ["job1"]);
+    assert.deepEqual(page.industries(), []);
   } finally {
     page.close();
   }
@@ -526,6 +538,23 @@ test("没有求职意向时提示去添加期望职位，不打断投递", async
     assert.ok(hasLog(lines, /还没有添加求职意向/), lines.join("\n"));
     const link = page.document.querySelector('#pro-log a[href="https://www.zhipin.com/web/geek/resume?editItem=userinfo"]');
     assert.ok(link, "提示里应有可点的链接");
+  } finally {
+    page.close();
+  }
+});
+
+test("设置里按 BOSS 的分组勾选公司行业，保存到本地并显示分几批", async () => {
+  const page = await openFakeBoss({ jobs: [job(1)] });
+  try {
+    const doc = page.document;
+    assert.equal(doc.querySelectorAll(".zdl-industry-group").length, 15);
+    const chip = (name) => [...doc.querySelectorAll(".zdl-industry-chips .zdl-status-chip")].find((el) => el.dataset.value === name);
+    ["游戏", "互联网", "银行", "大数据"].forEach((name) => chip(name).click());
+    assert.deepEqual(JSON.parse(page.window.localStorage.getItem("zdlIndustries")), ["互联网", "游戏", "大数据", "银行"]);
+    assert.equal(doc.querySelector(".zdl-industry-summary").textContent, "已选 4 个，每个栏目分 2 批筛选");
+    chip("银行").click();
+    assert.ok(!chip("银行").classList.contains("active"));
+    assert.equal(doc.querySelector(".zdl-industry-summary").textContent, "已选 3 个，每个栏目分 1 批筛选");
   } finally {
     page.close();
   }

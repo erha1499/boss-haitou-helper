@@ -70,6 +70,9 @@
     filterOption: ".filter-select-dropdown li",
     filterBoxes: { jobType: "求职类型", experience: "工作经验" },
     filterAnyText: "不限",
+    // 「公司行业」筛选：选项是 a，选中的带 active，一次最多选 3 个，再点一次取消（没有“不限”）
+    industryBox: ".condition-industry-select",
+    industryOption: ".select-list a",
     // 没有求职意向时提示用户去这里添加
     expectSettingsUrl: "https://www.zhipin.com/web/geek/resume?editItem=userinfo",
 
@@ -290,6 +293,51 @@
       try { localStorage.setItem(CONTACTED_JOBS_KEY, JSON.stringify(data)); } catch (error) {}
     },
   };
+
+  // BOSS 职位列表上「公司行业」筛选的全部选项（按 BOSS 的分组和顺序）。
+  // 用户在设置里勾选想投的行业，投递时每个栏目按这些行业分批筛选：BOSS 一次最多选 3 个。
+  const INDUSTRY_GROUPS = [
+    ["互联网/AI", ["互联网", "电子商务", "计算机软件", "生活服务(O2O)", "企业服务", "医疗健康", "游戏", "社交网络与媒体", "人工智能",
+      "云计算", "在线教育", "计算机服务", "大数据", "广告营销", "物联网", "新零售", "信息安全"]],
+    ["电子/通信/半导体", ["半导体/芯片", "电子/硬件开发", "通信/网络设备", "智能硬件/消费电子", "运营商/增值服务", "计算机硬件",
+      "电子/半导体/集成电路"]],
+    ["服务业", ["餐饮", "美容", "美发", "酒店/民宿", "休闲/娱乐", "运动/健身", "保健/养生", "家政服务", "旅游/景区", "婚庆/摄影",
+      "宠物服务", "回收/维修", "美容/美发", "其他生活服务"]],
+    ["消费品/批发/零售", ["批发/零售", "进出口贸易", "食品/饮料/烟酒", "服装/纺织", "家具/家居", "家用电器", "日化", "珠宝/首饰",
+      "家具/家电/家居", "其他消费品"]],
+    ["房地产/建筑", ["装修装饰", "房屋建筑工程", "土木工程", "机电工程", "物业管理", "房地产中介/租赁", "建筑材料", "房地产开发经营",
+      "建筑设计", "建筑工程咨询服务", "土地与公共设施管理", "工程施工"]],
+    ["教育培训", ["培训/辅导机构", "职业培训", "学前教育", "学校/学历教育", "学术/科研"]],
+    ["广告/传媒/文化/体育", ["文化艺术/娱乐", "体育", "广告/公关/会展", "广播/影视", "新闻/出版"]],
+    ["制造业", ["通用设备", "专用设备", "电气机械/器材", "金属制品", "非金属矿物制品", "橡胶/塑料制品", "化学原料/化学制品", "仪器仪表",
+      "自动化设备", "印刷/包装/造纸", "铁路/船舶/航空/航天制造", "计算机/通信/其他电子设备", "新材料", "机械设备/机电/重工",
+      "仪器仪表/工业自动化", "原材料及加工/模具", "其他制造业"]],
+    ["专业服务", ["咨询", "财务/审计/税务", "人力资源服务", "法律", "检测/认证/知识产权", "翻译", "其他专业服务"]],
+    ["制药/医疗", ["医疗服务", "医美服务", "医疗器械", "IVD", "生物/制药", "医药批发零售", "医疗研发外包"]],
+    ["汽车", ["新能源汽车", "汽车智能网联", "汽车经销商", "汽车后市场", "汽车研发/制造", "汽车零部件", "摩托车/自行车制造", "4S店/后市场"]],
+    ["交通运输/物流", ["即时配送", "快递", "公路物流", "同城货运", "跨境物流", "装卸搬运和仓储业", "客运服务", "港口/铁路/公路/机场",
+      "交通/运输", "物流/仓储"]],
+    ["能源/化工/环保", ["光伏", "储能", "动力电池", "风电", "其他新能源", "环保", "化工", "电力/热力/燃气/水利", "石油/石化", "矿产/地质",
+      "采掘/冶炼", "新能源"]],
+    ["金融", ["互联网金融", "银行", "投资/融资", "证券/期货", "基金", "保险", "租赁/拍卖/典当/担保", "信托", "财富管理", "其他金融业"]],
+    ["政府/非营利组织/其他", ["农/林/牧/渔", "非营利组织", "政府/公共事业", "其他行业"]],
+  ];
+
+  const INDUSTRIES = INDUSTRY_GROUPS.flatMap(([, items]) => items);
+
+  // BOSS 一次最多同时选 3 个行业
+  const INDUSTRY_BATCH_SIZE = 3;
+
+  // 只留认识的行业，按 BOSS 的顺序排，这样分批稳定
+  const normalizeIndustries = (list) => (Array.isArray(list) ? INDUSTRIES.filter((name) => list.includes(name)) : []);
+
+  // 按 3 个一批分好：["a","b","c","d"] → [["a","b","c"],["d"]]；没选行业时是空数组
+  function industryBatches(list) {
+    const names = normalizeIndustries(list);
+    const batches = [];
+    for (let i = 0; i < names.length; i += INDUSTRY_BATCH_SIZE) batches.push(names.slice(i, i + INDUSTRY_BATCH_SIZE));
+    return batches;
+  }
 
   // ---------- 岗位类型与经验 ----------
   // BOSS 的经验标签只有“在校生/应届生/经验不限/1年以内/1-3年/…”，没有“实习”，
@@ -707,6 +755,8 @@
   }
 
   state.jobTypeFilter = normalizeJobTypeFilter(getStoredJSON("zdlJobTypeFilter", null));
+  // 想投的公司行业（BOSS 的行业筛选），投递时每个栏目按这些行业 3 个一批筛选
+  state.industries = normalizeIndustries(getStoredJSON("zdlIndustries", []));
 
   // 投递中的状态：面板里“开始投递”下面的状态行，以及网页标签的标题。
   // 切到别的标签页时也能从标题看到进度；投递结束后标题提示结果，回到这个页面几秒后恢复。
@@ -1373,9 +1423,9 @@
   };
 
   const CONFIG_UNDO_KEY = "zdlConfigUndoV1";
-  const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter"];
+  const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter", "zdlIndustries"];
   const CONFIG_FIELD_LABELS = {
-    targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型",
+    targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型", industries: "公司行业",
     includeTags: "职位名 · 包含任一", coarseRequiredTags: "职位名 · 必须包含", coarseBlockedTags: "职位名 · 排除",
     locationTags: "工作地", blockedCompanies: "排除公司",
     detailBlockedTags: "详情 · 排除", detailRequiredTags: "详情 · 必须包含", detailOptionalTags: "详情 · 包含任一",
@@ -1395,6 +1445,7 @@
       salaryFilter: normalizeSalaryFilter(state.salaryFilter),
       recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
       jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years], degree: state.jobTypeFilter.degree },
+      industries: [...state.industries],
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
     return config;
@@ -1444,6 +1495,11 @@
       || (jobType.degree !== undefined && jobType.degree !== "" && !JOB_DEGREE_LABEL[jobType.degree]))) {
       throw new Error("岗位类型配置无效。");
     }
+    // 旧配置没有公司行业，按不限处理
+    if (config.industries !== undefined
+      && (!Array.isArray(config.industries) || !config.industries.every((name) => INDUSTRIES.includes(name)))) {
+      throw new Error("公司行业配置无效。");
+    }
     const activityOptions = RECRUITER_STATUS_OPTIONS;
     if (!Array.isArray(config.recruiterActivityStatus)
       || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
@@ -1454,6 +1510,7 @@
       salaryFilter: normalizeSalaryFilter(salary),
       recruiterActivityStatus: [...config.recruiterActivityStatus],
       jobTypeFilter: normalizeJobTypeFilter(jobType),
+      industries: normalizeIndustries(config.industries || []),
     };
     Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { normalized[key] = [...config[key]]; });
     return normalized;
@@ -1473,6 +1530,9 @@
       const degree = activeDegree(value) ? `；学历 ${JOB_DEGREE_LABEL[value.degree]}及以下` : "";
       return types + years + degree;
     }
+    if (key === "industries") {
+      return value.length ? `${value.join("、")}（每个栏目分 ${industryBatches(value).length} 批筛选）` : "不限";
+    }
     if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
     return value.map((keyword) => wizardKeywordName(keyword) || keyword).join("、");
   }
@@ -1490,6 +1550,7 @@
     values.salaryFilter = JSON.stringify(config.salaryFilter);
     values.recruiterActivityStatus = JSON.stringify(config.recruiterActivityStatus);
     values.zdlJobTypeFilter = JSON.stringify(config.jobTypeFilter);
+    values.zdlIndustries = JSON.stringify(config.industries);
     return values;
   }
 
@@ -1528,6 +1589,7 @@
     state.settings.recruiterActivityStatus.splice(0);
     config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
     state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);
+    state.industries = normalizeIndustries(config.industries);
   }
 
   function importConfig(jsonText) {
@@ -2066,6 +2128,9 @@
         this._createCollapsibleSection("岗位类型", "实习 / 校招 / 社招 / 学历", [
           this._createJobTypeSection(),
         ], () => (jobTypeFilterActive() ? 1 : 0)),
+        this._createCollapsibleSection("公司行业", "按行业筛选，3 个一批", [
+          this._createIndustrySection(),
+        ], () => state.industries.length),
         this._createCollapsibleSection("职位列表粗筛", "职位名、地点、公司、薪资", [
           coarseRequiredResult.section,
           includeResult.section,
@@ -2188,6 +2253,90 @@
       const yearsSection = make("社招年限", "按岗位要求的最低年限", JOB_YEARS, "years");
       yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
       section.append(typesSection, yearsSection, degreeSection);
+      return section;
+    },
+
+
+    // 公司行业：按 BOSS 的分组列出全部行业，勾选想投的。投递时每个求职意向栏目按这些行业 3 个一批筛选。
+    _createIndustrySection() {
+      const section = document.createElement("div");
+      section.className = "zdl-tag-section";
+      const head = document.createElement("div");
+      head.className = "zdl-tag-row";
+      const label = this._createFilterLabel("想投的行业",
+        "投递时每个求职意向栏目都按这些行业筛一遍；BOSS 一次最多选 3 个，所以 3 个一批依次筛。不选则不按行业筛");
+      const summary = document.createElement("span");
+      summary.className = "zdl-industry-summary";
+      const clear = document.createElement("a");
+      clear.className = "zdl-filter-link";
+      clear.href = "javascript:;";
+      clear.textContent = "清空";
+      label.append(clear);
+      head.append(label, summary);
+      section.appendChild(head);
+
+      const groups = [];
+      const render = () => {
+        const batches = industryBatches(state.industries).length;
+        summary.textContent = state.industries.length ? `已选 ${state.industries.length} 个，每个栏目分 ${batches} 批筛选` : "未选，不按行业筛";
+        clear.hidden = !state.industries.length;
+        groups.forEach(({ count, chips }) => {
+          let n = 0;
+          chips.forEach((chip) => {
+            const on = state.industries.includes(chip.dataset.value);
+            if (on) n++;
+            chip.classList.toggle("active", on);
+            chip.setAttribute("aria-pressed", String(on));
+          });
+          count.textContent = n ? String(n) : "";
+        });
+      };
+      const save = () => {
+        invalidateConfigUndo();
+        localStorage.setItem("zdlIndustries", JSON.stringify(state.industries));
+        render();
+        this._refreshFilterCounts();
+      };
+      clear.addEventListener("click", (event) => {
+        event.preventDefault();
+        state.industries = [];
+        save();
+      });
+
+      INDUSTRY_GROUPS.forEach(([groupName, items]) => {
+        const details = document.createElement("details");
+        details.className = "zdl-industry-group";
+        details.open = items.some((name) => state.industries.includes(name));
+        const title = document.createElement("summary");
+        const count = document.createElement("span");
+        count.className = "zdl-industry-count";
+        title.append(groupName, count);
+        const row = document.createElement("div");
+        row.className = "zdl-industry-chips";
+        const chips = items.map((name) => {
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "zdl-status-chip";
+          chip.dataset.value = name;
+          const check = document.createElement("span");
+          check.className = "zdl-status-check";
+          check.setAttribute("aria-hidden", "true");
+          chip.append(check, name);
+          chip.addEventListener("click", () => {
+            const selected = state.industries.includes(name);
+            state.industries = normalizeIndustries(selected
+              ? state.industries.filter((value) => value !== name)
+              : [...state.industries, name]);
+            save();
+          });
+          row.appendChild(chip);
+          return chip;
+        });
+        details.append(title, row);
+        section.appendChild(details);
+        groups.push({ count, chips });
+      });
+      render();
       return section;
     },
 
@@ -4332,6 +4481,18 @@
     }
   }
 
+  // 依次点这些选项，每次之间停一下；中途停了就不点了。返回是否点过
+  async function clickAll(options, isCurrent) {
+    let clicked = false;
+    for (const option of options.filter(Boolean)) {
+      if (!isCurrent()) break;
+      option.click();
+      clicked = true;
+      await delay(CONFIG.BASIC_INTERVAL);
+    }
+    return clicked;
+  }
+
   const ExpectTabs = {
     // 栏目：[{ name, el, recommend }]，第一个是「推荐」；页面上没有栏目栏时返回空数组
     list() {
@@ -4391,13 +4552,36 @@
         if (!target.length) clicks = [find(BOSS.filterAnyText)];
         else if (key === "jobType") clicks = [find(target[0])];
         else clicks = [...target.filter((t) => !current.includes(t)), ...current.filter((t) => !target.includes(t))].map(find);
-        for (const option of clicks.filter(Boolean)) {
-          if (!isCurrent()) return clicked;
-          option.click();
-          clicked = true;
-          await delay(CONFIG.BASIC_INTERVAL);
-        }
+        if (await clickAll(clicks, isCurrent)) clicked = true;
+        if (!isCurrent()) return clicked;
       }
+      if (clicked) await waitListChange(before, isCurrent, 6000, true);
+      return clicked;
+    },
+
+    _industryOptions() {
+      const box = document.querySelector(BOSS.industryBox);
+      return box ? Array.from(box.querySelectorAll(BOSS.industryOption)) : null;
+    },
+
+    // 当前选中的公司行业；页面上没有这个筛选时返回 null
+    readIndustries() {
+      const options = this._industryOptions();
+      return options && options.filter(isActive).map(textOf);
+    },
+
+    // 把公司行业设成 wanted（最多 3 个，空数组表示不限）。先取消多余的再选新的，免得超过 3 个被 BOSS 拒绝。
+    // 返回是否改过
+    async applyIndustries(wanted, isCurrent) {
+      const options = this._industryOptions();
+      if (!options) return false;
+      const before = listSignature();
+      const current = options.filter(isActive);
+      const clicks = [
+        ...current.filter((option) => !wanted.includes(textOf(option))),
+        ...options.filter((option) => !isActive(option) && wanted.includes(textOf(option))),
+      ];
+      const clicked = await clickAll(clicks, isCurrent);
       if (clicked) await waitListChange(before, isCurrent, 6000, true);
       return clicked;
     },
@@ -4488,6 +4672,7 @@
       count("locationTags") ? `工作地 ${config.locationTags.join("、")}` : "",
       salary ? `薪资 ${formatConfigValue("salaryFilter", config.salaryFilter)}` : "",
       count("blockedCompanies") ? `排除公司 ${count("blockedCompanies")} 家` : "",
+      count("industries") ? `公司行业 ${count("industries")} 个` : "",
       group("详情 ", [["detailOptionalTags", "包含"], ["detailRequiredTags", "必须"], ["detailBlockedTags", "排除"]]),
       count("recruiterIncludeTags") || activity ? "招聘者有限制" : "",
     ].filter(Boolean);
@@ -4927,33 +5112,55 @@
       if (Delivery.isCurrent(run)) stopProcess(run);
     },
 
-    // 开始投递时看列表上方的栏目，定好这次要投哪些栏目、按什么顺序：
-    // - 停在「推荐」上（或没选中栏目）：先投「推荐」（按岗位类型设好筛选），再依次投每个求职意向
-    // - 停在某个求职意向上：不投「推荐」，从这个求职意向开始，把所有求职意向都投一遍
-    // 都投完才刷新页面；刷新后按同一个起点重新来一遍。
+    // 开始投递时定好这次要投的栏目和顺序：
+    // - 有求职意向：只投求职意向，不投「推荐」。停在某个求职意向上就从它开始，停在「推荐」上就从第一个开始，
+    //   依次把所有求职意向投一遍
+    // - 没有求职意向：只能投「推荐」，按岗位类型设好求职类型和工作经验，并提示去添加求职意向
+    // 用户选了公司行业时，每个栏目再按行业 3 个一批依次筛选。都投完才刷新页面，刷新后按同一个起点重新来一遍。
     async prepareTabs(run) {
       const tabs = ExpectTabs.list();
-      if (!tabs.length) return;
-      if (tabs.length === 1 && !run.chain) {
-        this.log(`提示：还没有添加求职意向。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
-          + "添加「期望职位」后，投完「推荐」会自动切到各个求职意向继续投");
+      const expects = tabs.filter((tab) => !tab.recommend);
+      const isCurrent = () => Delivery.isCurrent(run);
+      let order;
+      let startTab = "";
+      if (!expects.length) {
+        if (tabs.length && !run.chain) {
+          this.log(`提示：还没有添加求职意向，这次只投「推荐」。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
+            + "添加「期望职位」后，会改为按各个求职意向投递");
+        }
+        if (tabs.length && ExpectTabs.activeIndex(tabs) !== 0) {
+          RunStatus.setActivity("正在切换到「推荐」…");
+          await ExpectTabs.select(tabs[0], isCurrent);
+          if (!isCurrent()) return;
+        }
+        order = [tabs[0]?.name || ""];
+      } else {
+        const active = ExpectTabs.activeIndex(tabs);
+        let start = run.chain
+          ? expects.findIndex((tab) => tab.name === run.chain.startTab)
+          : expects.findIndex((tab) => tab === tabs[active]);
+        if (start < 0) start = 0;
+        if (tabs[active] !== expects[start]) {
+          RunStatus.setActivity(`正在切换到「${expects[start].name}」…`);
+          await ExpectTabs.select(expects[start], isCurrent);
+          if (!isCurrent()) return;
+        }
+        order = [...expects.slice(start), ...expects.slice(0, start)].map((tab) => tab.name);
+        startTab = order[0];
+        const rest = order.slice(1).map((name) => `「${name}」`).join("");
+        this.log(`只投求职意向，不投「推荐」。从「${order[0]}」开始${rest ? `，投完依次切换到：${rest}` : ""}`);
       }
-      let start = run.chain
-        ? tabs.findIndex((tab) => !tab.recommend && tab.name === run.chain.startTab)
-        : ExpectTabs.activeIndex(tabs);
-      if (start < 0) start = 0;
-      if (ExpectTabs.activeIndex(tabs) !== start) {
-        RunStatus.setActivity(`正在切换到「${tabs[start].name}」…`);
-        await ExpectTabs.select(tabs[start], () => Delivery.isCurrent(run));
-        if (!Delivery.isCurrent(run)) return;
+      const batches = industryBatches(state.industries);
+      run.tabs = {
+        order, index: 0, startTab, recommend: !expects.length && !!tabs.length,
+        batches, batch: 0, industriesOriginal: null, industriesApplied: false,
+        original: null, applied: false,
+      };
+      if (batches.length) {
+        this.log(`每个栏目按公司行业分 ${batches.length} 批筛选：${batches.map((batch) => `「${batch.join("、")}」`).join("")}`);
       }
-      const names = tabs.map((tab) => tab.name);
-      const order = start === 0 ? names : [...names.slice(start), ...names.slice(1, start)];
-      run.tabs = { order, index: 0, startTab: start === 0 ? "" : order[0], original: null, applied: false };
-      const rest = order.slice(1).map((name) => `「${name}」`).join("");
-      const head = start === 0 ? `从「${order[0]}」开始` : `从求职意向「${order[0]}」开始，这次不投「推荐」`;
-      if (start > 0 || rest) this.log(rest ? `${head}，投完依次切换到：${rest}` : head);
-      if (start === 0) await this.applyRecommendFilters(run);
+      if (run.tabs.recommend) await this.applyRecommendFilters(run);
+      await this.applyIndustryBatch(run);
     },
 
     // 「推荐」按用户定位列岗位，按岗位类型设置帮用户选好求职类型和工作经验，能投的会多一些
@@ -4969,19 +5176,57 @@
       if (Delivery.isCurrent(run)) this.log(`「推荐」按岗位类型设置筛选：${desc}`);
     },
 
-    // 离开「推荐」或结束投递时，把脚本改过的筛选条件改回去（BOSS 切栏目时会带着筛选条件）
-    async restoreRecommendFilters(run, isCurrent) {
-      if (!run.tabs?.applied) return;
-      run.tabs.applied = false;
-      await ExpectTabs.applyFilters(run.tabs.original, isCurrent);
+    // 把公司行业设成当前这一批（BOSS 切栏目时会带着行业条件，所以每到一个栏目都重新设）
+    async applyIndustryBatch(run) {
+      const tabs = run.tabs;
+      if (!tabs.batches.length || !Delivery.isCurrent(run)) return;
+      if (tabs.industriesOriginal === null) {
+        tabs.industriesOriginal = ExpectTabs.readIndustries();
+        if (tabs.industriesOriginal === null) {
+          this.log("页面上没找到「公司行业」筛选，这次不按行业筛");
+          tabs.batches = [];
+          return;
+        }
+      }
+      const batch = tabs.batches[tabs.batch];
+      RunStatus.setActivity(`正在筛选公司行业：${batch.join("、")}…`);
+      if (await ExpectTabs.applyIndustries(batch, () => Delivery.isCurrent(run))) tabs.industriesApplied = true;
+      resetJobList();
     },
 
-    // 当前栏目投完了，按顺序切到下一个求职意向。切了返回 true，这次要投的栏目都投完了返回 false
+    // 结束投递或刷新页面前，把脚本改过的筛选条件改回去（BOSS 切栏目、刷新页面都会带着筛选条件）
+    async restorePageFilters(run, isCurrent) {
+      const tabs = run.tabs;
+      if (!tabs) return;
+      if (tabs.industriesApplied) {
+        tabs.industriesApplied = false;
+        await ExpectTabs.applyIndustries(tabs.industriesOriginal || [], isCurrent);
+      }
+      if (tabs.applied) {
+        tabs.applied = false;
+        await ExpectTabs.applyFilters(tabs.original, isCurrent);
+      }
+    },
+
+    // 当前列表投完了，按顺序换下一批行业或下一个求职意向。换了返回 true，这次要投的都投完了返回 false
     async switchToNextTab(run, reason) {
       const tabs = run.tabs;
       if (!tabs) return false;
+      const isCurrent = () => Delivery.isCurrent(run);
+      const here = () => {
+        const name = tabs.order[tabs.index] ? `「${tabs.order[tabs.index]}」` : "当前列表";
+        return tabs.batches.length ? `${name}行业「${tabs.batches[tabs.batch].join("、")}」` : name;
+      };
+      if (tabs.batch < tabs.batches.length - 1) {
+        const from = here();
+        tabs.batch++;
+        this.log(`${from}已投完（${reason}），换行业「${tabs.batches[tabs.batch].join("、")}」继续`);
+        await this.applyIndustryBatch(run);
+        run.tabSwitched = true;
+        return true;
+      }
       while (tabs.index < tabs.order.length - 1) {
-        const from = tabs.order[tabs.index];
+        const from = here();
         tabs.index++;
         const name = tabs.order[tabs.index];
         const tab = ExpectTabs.list().find((item) => !item.recommend && item.name === name);
@@ -4989,12 +5234,11 @@
           this.log(`没找到求职意向「${name}」，跳过`);
           continue;
         }
-        this.log(`「${from}」已投完（${reason}），切换到求职意向「${name}」继续`);
+        this.log(`${from}已投完（${reason}），切换到求职意向「${name}」继续`);
         RunStatus.setActivity(`正在切换到「${name}」…`);
-        const isCurrent = () => Delivery.isCurrent(run);
-        await this.restoreRecommendFilters(run, isCurrent);
-        if (!isCurrent()) return true;
         await ExpectTabs.select(tab, isCurrent);
+        tabs.batch = 0;
+        await this.applyIndustryBatch(run);
         resetJobList();
         run.tabSwitched = true;
         return true;
@@ -5018,6 +5262,9 @@
       RunStatus.setActivity("即将刷新页面，换一批岗位…");
       // 留几秒给用户点“停止投递”
       await this.delay(3000);
+      if (!Delivery.isCurrent(run)) return;
+      // 刷新会保留网址里的筛选条件，先改回去，刷新后从干净的页面重新来
+      await this.restorePageFilters(run, () => Delivery.isCurrent(run));
       if (!Delivery.isCurrent(run)) return;
       run.refreshing = true;
       stopProcess(run);
@@ -5412,7 +5659,7 @@
       highlightCard(null);
       if (!run.refreshing) AutoRefresh.clear();
       if (!run.refreshing && isJobsPage()) {
-        await Core.restoreRecommendFilters(run, () => !state.activeRun || state.activeRun === run).catch(() => {});
+        await Core.restorePageFilters(run, () => !state.activeRun || state.activeRun === run).catch(() => {});
       }
       if (run.started && !run.refreshing) {
         Core.logRunSummary(run);
@@ -5615,6 +5862,13 @@
 .zdl-preview-job-link:hover{background:#fde68a;text-decoration-color:currentColor}
 .zdl-filter-link{margin-left:auto;color:var(--zdl-primary);font-size:11px;font-weight:400;text-decoration:none}
 .zdl-filter-link:hover{text-decoration:underline}
+.zdl-filter-link[hidden]{display:none}
+.zdl-industry-summary{font-size:11px;color:var(--zdl-text-3)}
+.zdl-industry-group{margin-top:6px}
+.zdl-industry-group>summary{cursor:pointer;font-size:12px;line-height:1.8;color:var(--zdl-text-2);user-select:none}
+.zdl-industry-count{margin-left:6px;padding:0 6px;border-radius:8px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px}
+.zdl-industry-count:empty{display:none}
+.zdl-industry-chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
 .zdl-tag-section[hidden]{display:none}
 .zdl-preview-head,.zdl-preview-warn{flex-shrink:0}
 /* 明细内容多时只在预览区内部滚动，不把下方的规则区挤没 */

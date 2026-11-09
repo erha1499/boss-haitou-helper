@@ -34,3 +34,10 @@ test("排除外包的关键词不误伤“非外包”", async () => {
   assert.equal(matchKeyword("非外包，正式编制", keyword), false);
   assert.equal(matchKeyword("不是外包岗位", keyword), false);
 });
+
+test("导入配置：公司行业只认 BOSS 的行业，旧配置没有这一项时按不限", () => {
+  const wrap = (config) => JSON.stringify({ type: "zdl-boss-config", version: 1, config: { targetCount: 50, salaryFilter: {}, recruiterActivityStatus: [], ...config } });
+  assert.deepEqual(parseConfig(wrap({})).industries, []);
+  assert.deepEqual(parseConfig(wrap({ industries: ["游戏", "互联网"] })).industries, ["互联网", "游戏"]);
+  assert.throws(() => parseConfig(wrap({ industries: ["不存在的行业"] })), /公司行业配置无效/);
+});

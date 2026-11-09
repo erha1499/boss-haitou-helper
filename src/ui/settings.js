@@ -2,6 +2,7 @@ import { RECRUITER_STATUS_OPTIONS, REPO_URL } from "../config.js";
 import { Delivery } from "../delivery.js";
 import { hasFilterRules, jobTypeFilterActive } from "../filters.js";
 import { CoarsePreview } from "../preview.js";
+import { INDUSTRY_GROUPS, industryBatches, normalizeIndustries } from "../rules/industries.js";
 import { JOB_DEGREES, JOB_TYPES, JOB_YEARS, normalizeJobTypeFilter } from "../rules/job-type.js";
 import { SALARY_BANDS, formatSalaryBand, isSalaryFilterActive, normalizeSalaryFilter } from "../rules/salary.js";
 import { splitAlternatives } from "../rules/keywords.js";
@@ -222,6 +223,9 @@ export const SettingsMethods = {
       this._createCollapsibleSection("岗位类型", "实习 / 校招 / 社招 / 学历", [
         this._createJobTypeSection(),
       ], () => (jobTypeFilterActive() ? 1 : 0)),
+      this._createCollapsibleSection("公司行业", "按行业筛选，3 个一批", [
+        this._createIndustrySection(),
+      ], () => state.industries.length),
       this._createCollapsibleSection("职位列表粗筛", "职位名、地点、公司、薪资", [
         coarseRequiredResult.section,
         includeResult.section,
@@ -344,6 +348,90 @@ export const SettingsMethods = {
     const yearsSection = make("社招年限", "按岗位要求的最低年限", JOB_YEARS, "years");
     yearsSection.hidden = !state.jobTypeFilter.types.includes("social");
     section.append(typesSection, yearsSection, degreeSection);
+    return section;
+  },
+
+
+  // 公司行业：按 BOSS 的分组列出全部行业，勾选想投的。投递时每个求职意向栏目按这些行业 3 个一批筛选。
+  _createIndustrySection() {
+    const section = document.createElement("div");
+    section.className = "zdl-tag-section";
+    const head = document.createElement("div");
+    head.className = "zdl-tag-row";
+    const label = this._createFilterLabel("想投的行业",
+      "投递时每个求职意向栏目都按这些行业筛一遍；BOSS 一次最多选 3 个，所以 3 个一批依次筛。不选则不按行业筛");
+    const summary = document.createElement("span");
+    summary.className = "zdl-industry-summary";
+    const clear = document.createElement("a");
+    clear.className = "zdl-filter-link";
+    clear.href = "javascript:;";
+    clear.textContent = "清空";
+    label.append(clear);
+    head.append(label, summary);
+    section.appendChild(head);
+
+    const groups = [];
+    const render = () => {
+      const batches = industryBatches(state.industries).length;
+      summary.textContent = state.industries.length ? `已选 ${state.industries.length} 个，每个栏目分 ${batches} 批筛选` : "未选，不按行业筛";
+      clear.hidden = !state.industries.length;
+      groups.forEach(({ count, chips }) => {
+        let n = 0;
+        chips.forEach((chip) => {
+          const on = state.industries.includes(chip.dataset.value);
+          if (on) n++;
+          chip.classList.toggle("active", on);
+          chip.setAttribute("aria-pressed", String(on));
+        });
+        count.textContent = n ? String(n) : "";
+      });
+    };
+    const save = () => {
+      invalidateConfigUndo();
+      localStorage.setItem("zdlIndustries", JSON.stringify(state.industries));
+      render();
+      this._refreshFilterCounts();
+    };
+    clear.addEventListener("click", (event) => {
+      event.preventDefault();
+      state.industries = [];
+      save();
+    });
+
+    INDUSTRY_GROUPS.forEach(([groupName, items]) => {
+      const details = document.createElement("details");
+      details.className = "zdl-industry-group";
+      details.open = items.some((name) => state.industries.includes(name));
+      const title = document.createElement("summary");
+      const count = document.createElement("span");
+      count.className = "zdl-industry-count";
+      title.append(groupName, count);
+      const row = document.createElement("div");
+      row.className = "zdl-industry-chips";
+      const chips = items.map((name) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "zdl-status-chip";
+        chip.dataset.value = name;
+        const check = document.createElement("span");
+        check.className = "zdl-status-check";
+        check.setAttribute("aria-hidden", "true");
+        chip.append(check, name);
+        chip.addEventListener("click", () => {
+          const selected = state.industries.includes(name);
+          state.industries = normalizeIndustries(selected
+            ? state.industries.filter((value) => value !== name)
+            : [...state.industries, name]);
+          save();
+        });
+        row.appendChild(chip);
+        return chip;
+      });
+      details.append(title, row);
+      section.appendChild(details);
+      groups.push({ count, chips });
+    });
+    render();
     return section;
   },
 

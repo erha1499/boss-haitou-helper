@@ -1,4 +1,5 @@
 import { CONFIG, RECRUITER_STATUS_OPTIONS } from "./config.js";
+import { INDUSTRIES, industryBatches, normalizeIndustries } from "./rules/industries.js";
 import { JOB_DEGREE_LABEL, JOB_TYPES, JOB_TYPE_LABEL, JOB_YEARS, JOB_YEARS_LABEL, LEGACY_JOB_TYPES, activeDegree, normalizeJobTypeFilter } from "./rules/job-type.js";
 import { SALARY_BANDS, formatSalaryBand, isSalaryBandActive, normalizeSalaryFilter } from "./rules/salary.js";
 import { wizardKeywordName } from "./rules/wizard.js";
@@ -32,9 +33,9 @@ export const CONFIG_TAG_STORAGE_KEYS = {
 };
 
 export const CONFIG_UNDO_KEY = "zdlConfigUndoV1";
-export const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter"];
+export const CONFIG_STORAGE_KEYS = [...Object.values(CONFIG_TAG_STORAGE_KEYS), "zdlTargetCount", "salaryFilter", "recruiterActivityStatus", "zdlJobTypeFilter", "zdlIndustries"];
 export const CONFIG_FIELD_LABELS = {
-  targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型",
+  targetCount: "今日目标", salaryFilter: "薪资范围", recruiterActivityStatus: "招聘者活跃状态", jobTypeFilter: "岗位类型", industries: "公司行业",
   includeTags: "职位名 · 包含任一", coarseRequiredTags: "职位名 · 必须包含", coarseBlockedTags: "职位名 · 排除",
   locationTags: "工作地", blockedCompanies: "排除公司",
   detailBlockedTags: "详情 · 排除", detailRequiredTags: "详情 · 必须包含", detailOptionalTags: "详情 · 包含任一",
@@ -54,6 +55,7 @@ export function getCurrentConfig() {
     salaryFilter: normalizeSalaryFilter(state.salaryFilter),
     recruiterActivityStatus: [...state.settings.recruiterActivityStatus],
     jobTypeFilter: { types: [...state.jobTypeFilter.types], years: [...state.jobTypeFilter.years], degree: state.jobTypeFilter.degree },
+    industries: [...state.industries],
   };
   Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { config[key] = [...state[key]]; });
   return config;
@@ -103,6 +105,11 @@ export function parseConfig(jsonText) {
     || (jobType.degree !== undefined && jobType.degree !== "" && !JOB_DEGREE_LABEL[jobType.degree]))) {
     throw new Error("岗位类型配置无效。");
   }
+  // 旧配置没有公司行业，按不限处理
+  if (config.industries !== undefined
+    && (!Array.isArray(config.industries) || !config.industries.every((name) => INDUSTRIES.includes(name)))) {
+    throw new Error("公司行业配置无效。");
+  }
   const activityOptions = RECRUITER_STATUS_OPTIONS;
   if (!Array.isArray(config.recruiterActivityStatus)
     || !config.recruiterActivityStatus.every((value) => activityOptions.includes(value))) {
@@ -113,6 +120,7 @@ export function parseConfig(jsonText) {
     salaryFilter: normalizeSalaryFilter(salary),
     recruiterActivityStatus: [...config.recruiterActivityStatus],
     jobTypeFilter: normalizeJobTypeFilter(jobType),
+    industries: normalizeIndustries(config.industries || []),
   };
   Object.keys(CONFIG_TAG_STORAGE_KEYS).forEach((key) => { normalized[key] = [...config[key]]; });
   return normalized;
@@ -132,6 +140,9 @@ export function formatConfigValue(key, value) {
     const degree = activeDegree(value) ? `；学历 ${JOB_DEGREE_LABEL[value.degree]}及以下` : "";
     return types + years + degree;
   }
+  if (key === "industries") {
+    return value.length ? `${value.join("、")}（每个栏目分 ${industryBatches(value).length} 批筛选）` : "不限";
+  }
   if (!value.length) return ["locationTags", "recruiterActivityStatus"].includes(key) ? "不限" : "清空";
   return value.map((keyword) => wizardKeywordName(keyword) || keyword).join("、");
 }
@@ -149,6 +160,7 @@ export function getConfigStorageValues(config) {
   values.salaryFilter = JSON.stringify(config.salaryFilter);
   values.recruiterActivityStatus = JSON.stringify(config.recruiterActivityStatus);
   values.zdlJobTypeFilter = JSON.stringify(config.jobTypeFilter);
+  values.zdlIndustries = JSON.stringify(config.industries);
   return values;
 }
 
@@ -187,6 +199,7 @@ export function writeConfig(config, undoValue) {
   state.settings.recruiterActivityStatus.splice(0);
   config.recruiterActivityStatus.forEach((value) => state.settings.recruiterActivityStatus.push(value));
   state.jobTypeFilter = normalizeJobTypeFilter(config.jobTypeFilter);
+  state.industries = normalizeIndustries(config.industries);
 }
 
 export function importConfig(jsonText) {

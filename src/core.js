@@ -7,6 +7,7 @@ import { ContactedJobs } from "./contacted.js";
 import { DELIVERY_LOCK_NAME, Delivery } from "./delivery.js";
 import { ExpectTabs } from "./expect-tabs.js";
 import { coarseExplain, coarseRejectReason, hasFilterRules, jobTypeAccepted, jobTypeFilterActive, readCardInfo } from "./filters.js";
+import { industryBatches } from "./rules/industries.js";
 import { classifyJob, degreeRejectBy } from "./rules/job-type.js";
 import { describeRecommendFilters, recommendFilters } from "./rules/recommend-filter.js";
 import { isSalaryFilterActive } from "./rules/salary.js";
@@ -53,6 +54,7 @@ function filterSummary() {
     count("locationTags") ? `工作地 ${config.locationTags.join("、")}` : "",
     salary ? `薪资 ${formatConfigValue("salaryFilter", config.salaryFilter)}` : "",
     count("blockedCompanies") ? `排除公司 ${count("blockedCompanies")} 家` : "",
+    count("industries") ? `公司行业 ${count("industries")} 个` : "",
     group("详情 ", [["detailOptionalTags", "包含"], ["detailRequiredTags", "必须"], ["detailBlockedTags", "排除"]]),
     count("recruiterIncludeTags") || activity ? "招聘者有限制" : "",
   ].filter(Boolean);
@@ -492,33 +494,55 @@ export const Core = {
     if (Delivery.isCurrent(run)) stopProcess(run);
   },
 
-  // 开始投递时看列表上方的栏目，定好这次要投哪些栏目、按什么顺序：
-  // - 停在「推荐」上（或没选中栏目）：先投「推荐」（按岗位类型设好筛选），再依次投每个求职意向
-  // - 停在某个求职意向上：不投「推荐」，从这个求职意向开始，把所有求职意向都投一遍
-  // 都投完才刷新页面；刷新后按同一个起点重新来一遍。
+  // 开始投递时定好这次要投的栏目和顺序：
+  // - 有求职意向：只投求职意向，不投「推荐」。停在某个求职意向上就从它开始，停在「推荐」上就从第一个开始，
+  //   依次把所有求职意向投一遍
+  // - 没有求职意向：只能投「推荐」，按岗位类型设好求职类型和工作经验，并提示去添加求职意向
+  // 用户选了公司行业时，每个栏目再按行业 3 个一批依次筛选。都投完才刷新页面，刷新后按同一个起点重新来一遍。
   async prepareTabs(run) {
     const tabs = ExpectTabs.list();
-    if (!tabs.length) return;
-    if (tabs.length === 1 && !run.chain) {
-      this.log(`提示：还没有添加求职意向。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
-        + "添加「期望职位」后，投完「推荐」会自动切到各个求职意向继续投");
+    const expects = tabs.filter((tab) => !tab.recommend);
+    const isCurrent = () => Delivery.isCurrent(run);
+    let order;
+    let startTab = "";
+    if (!expects.length) {
+      if (tabs.length && !run.chain) {
+        this.log(`提示：还没有添加求职意向，这次只投「推荐」。「推荐」按定位列岗位，能投的往往不多；到 ${BOSS.expectSettingsUrl} `
+          + "添加「期望职位」后，会改为按各个求职意向投递");
+      }
+      if (tabs.length && ExpectTabs.activeIndex(tabs) !== 0) {
+        RunStatus.setActivity("正在切换到「推荐」…");
+        await ExpectTabs.select(tabs[0], isCurrent);
+        if (!isCurrent()) return;
+      }
+      order = [tabs[0]?.name || ""];
+    } else {
+      const active = ExpectTabs.activeIndex(tabs);
+      let start = run.chain
+        ? expects.findIndex((tab) => tab.name === run.chain.startTab)
+        : expects.findIndex((tab) => tab === tabs[active]);
+      if (start < 0) start = 0;
+      if (tabs[active] !== expects[start]) {
+        RunStatus.setActivity(`正在切换到「${expects[start].name}」…`);
+        await ExpectTabs.select(expects[start], isCurrent);
+        if (!isCurrent()) return;
+      }
+      order = [...expects.slice(start), ...expects.slice(0, start)].map((tab) => tab.name);
+      startTab = order[0];
+      const rest = order.slice(1).map((name) => `「${name}」`).join("");
+      this.log(`只投求职意向，不投「推荐」。从「${order[0]}」开始${rest ? `，投完依次切换到：${rest}` : ""}`);
     }
-    let start = run.chain
-      ? tabs.findIndex((tab) => !tab.recommend && tab.name === run.chain.startTab)
-      : ExpectTabs.activeIndex(tabs);
-    if (start < 0) start = 0;
-    if (ExpectTabs.activeIndex(tabs) !== start) {
-      RunStatus.setActivity(`正在切换到「${tabs[start].name}」…`);
-      await ExpectTabs.select(tabs[start], () => Delivery.isCurrent(run));
-      if (!Delivery.isCurrent(run)) return;
+    const batches = industryBatches(state.industries);
+    run.tabs = {
+      order, index: 0, startTab, recommend: !expects.length && !!tabs.length,
+      batches, batch: 0, industriesOriginal: null, industriesApplied: false,
+      original: null, applied: false,
+    };
+    if (batches.length) {
+      this.log(`每个栏目按公司行业分 ${batches.length} 批筛选：${batches.map((batch) => `「${batch.join("、")}」`).join("")}`);
     }
-    const names = tabs.map((tab) => tab.name);
-    const order = start === 0 ? names : [...names.slice(start), ...names.slice(1, start)];
-    run.tabs = { order, index: 0, startTab: start === 0 ? "" : order[0], original: null, applied: false };
-    const rest = order.slice(1).map((name) => `「${name}」`).join("");
-    const head = start === 0 ? `从「${order[0]}」开始` : `从求职意向「${order[0]}」开始，这次不投「推荐」`;
-    if (start > 0 || rest) this.log(rest ? `${head}，投完依次切换到：${rest}` : head);
-    if (start === 0) await this.applyRecommendFilters(run);
+    if (run.tabs.recommend) await this.applyRecommendFilters(run);
+    await this.applyIndustryBatch(run);
   },
 
   // 「推荐」按用户定位列岗位，按岗位类型设置帮用户选好求职类型和工作经验，能投的会多一些
@@ -534,19 +558,57 @@ export const Core = {
     if (Delivery.isCurrent(run)) this.log(`「推荐」按岗位类型设置筛选：${desc}`);
   },
 
-  // 离开「推荐」或结束投递时，把脚本改过的筛选条件改回去（BOSS 切栏目时会带着筛选条件）
-  async restoreRecommendFilters(run, isCurrent) {
-    if (!run.tabs?.applied) return;
-    run.tabs.applied = false;
-    await ExpectTabs.applyFilters(run.tabs.original, isCurrent);
+  // 把公司行业设成当前这一批（BOSS 切栏目时会带着行业条件，所以每到一个栏目都重新设）
+  async applyIndustryBatch(run) {
+    const tabs = run.tabs;
+    if (!tabs.batches.length || !Delivery.isCurrent(run)) return;
+    if (tabs.industriesOriginal === null) {
+      tabs.industriesOriginal = ExpectTabs.readIndustries();
+      if (tabs.industriesOriginal === null) {
+        this.log("页面上没找到「公司行业」筛选，这次不按行业筛");
+        tabs.batches = [];
+        return;
+      }
+    }
+    const batch = tabs.batches[tabs.batch];
+    RunStatus.setActivity(`正在筛选公司行业：${batch.join("、")}…`);
+    if (await ExpectTabs.applyIndustries(batch, () => Delivery.isCurrent(run))) tabs.industriesApplied = true;
+    resetJobList();
   },
 
-  // 当前栏目投完了，按顺序切到下一个求职意向。切了返回 true，这次要投的栏目都投完了返回 false
+  // 结束投递或刷新页面前，把脚本改过的筛选条件改回去（BOSS 切栏目、刷新页面都会带着筛选条件）
+  async restorePageFilters(run, isCurrent) {
+    const tabs = run.tabs;
+    if (!tabs) return;
+    if (tabs.industriesApplied) {
+      tabs.industriesApplied = false;
+      await ExpectTabs.applyIndustries(tabs.industriesOriginal || [], isCurrent);
+    }
+    if (tabs.applied) {
+      tabs.applied = false;
+      await ExpectTabs.applyFilters(tabs.original, isCurrent);
+    }
+  },
+
+  // 当前列表投完了，按顺序换下一批行业或下一个求职意向。换了返回 true，这次要投的都投完了返回 false
   async switchToNextTab(run, reason) {
     const tabs = run.tabs;
     if (!tabs) return false;
+    const isCurrent = () => Delivery.isCurrent(run);
+    const here = () => {
+      const name = tabs.order[tabs.index] ? `「${tabs.order[tabs.index]}」` : "当前列表";
+      return tabs.batches.length ? `${name}行业「${tabs.batches[tabs.batch].join("、")}」` : name;
+    };
+    if (tabs.batch < tabs.batches.length - 1) {
+      const from = here();
+      tabs.batch++;
+      this.log(`${from}已投完（${reason}），换行业「${tabs.batches[tabs.batch].join("、")}」继续`);
+      await this.applyIndustryBatch(run);
+      run.tabSwitched = true;
+      return true;
+    }
     while (tabs.index < tabs.order.length - 1) {
-      const from = tabs.order[tabs.index];
+      const from = here();
       tabs.index++;
       const name = tabs.order[tabs.index];
       const tab = ExpectTabs.list().find((item) => !item.recommend && item.name === name);
@@ -554,12 +616,11 @@ export const Core = {
         this.log(`没找到求职意向「${name}」，跳过`);
         continue;
       }
-      this.log(`「${from}」已投完（${reason}），切换到求职意向「${name}」继续`);
+      this.log(`${from}已投完（${reason}），切换到求职意向「${name}」继续`);
       RunStatus.setActivity(`正在切换到「${name}」…`);
-      const isCurrent = () => Delivery.isCurrent(run);
-      await this.restoreRecommendFilters(run, isCurrent);
-      if (!isCurrent()) return true;
       await ExpectTabs.select(tab, isCurrent);
+      tabs.batch = 0;
+      await this.applyIndustryBatch(run);
       resetJobList();
       run.tabSwitched = true;
       return true;
@@ -583,6 +644,9 @@ export const Core = {
     RunStatus.setActivity("即将刷新页面，换一批岗位…");
     // 留几秒给用户点“停止投递”
     await this.delay(3000);
+    if (!Delivery.isCurrent(run)) return;
+    // 刷新会保留网址里的筛选条件，先改回去，刷新后从干净的页面重新来
+    await this.restorePageFilters(run, () => Delivery.isCurrent(run));
     if (!Delivery.isCurrent(run)) return;
     run.refreshing = true;
     stopProcess(run);
@@ -977,7 +1041,7 @@ async function runDelivery({ remedy = null, resume = null } = {}) {
     highlightCard(null);
     if (!run.refreshing) AutoRefresh.clear();
     if (!run.refreshing && isJobsPage()) {
-      await Core.restoreRecommendFilters(run, () => !state.activeRun || state.activeRun === run).catch(() => {});
+      await Core.restorePageFilters(run, () => !state.activeRun || state.activeRun === run).catch(() => {});
     }
     if (run.started && !run.refreshing) {
       Core.logRunSummary(run);

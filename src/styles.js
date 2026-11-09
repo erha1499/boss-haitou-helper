@@ -187,6 +187,13 @@ export const CSS = `
 .zdl-preview-job-link:hover{background:#fde68a;text-decoration-color:currentColor}
 .zdl-filter-link{margin-left:auto;color:var(--zdl-primary);font-size:11px;font-weight:400;text-decoration:none}
 .zdl-filter-link:hover{text-decoration:underline}
+.zdl-filter-link[hidden]{display:none}
+.zdl-industry-summary{font-size:11px;color:var(--zdl-text-3)}
+.zdl-industry-group{margin-top:6px}
+.zdl-industry-group>summary{cursor:pointer;font-size:12px;line-height:1.8;color:var(--zdl-text-2);user-select:none}
+.zdl-industry-count{margin-left:6px;padding:0 6px;border-radius:8px;background:var(--zdl-accent);color:var(--zdl-primary);font-size:11px}
+.zdl-industry-count:empty{display:none}
+.zdl-industry-chips{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
 .zdl-tag-section[hidden]{display:none}
 .zdl-preview-head,.zdl-preview-warn{flex-shrink:0}
 /* 明细内容多时只在预览区内部滚动，不把下方的规则区挤没 */

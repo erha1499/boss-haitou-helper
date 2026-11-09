@@ -4,11 +4,13 @@
 import { readFile } from "node:fs/promises";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { OUTPUT_FILE } from "../../scripts/build.js";
+import { INDUSTRY_GROUPS } from "../../src/rules/industries.js";
 
 const SPEED = 50;
 const UID = "12345678";
 
-// job: { id, title, company, salary, tags, desc, active, recruiter, button, onChat }
+// job: { id, title, company, salary, tags, desc, active, recruiter, button, onChat, industry }
+//   industry：公司行业，选了行业筛选时只列出行业对得上的岗位
 //   button：详情里沟通按钮的文字，默认“立即沟通”；"" 表示没有按钮
 //   onChat："greet"（默认，弹出投递成功）| "limit"（弹出 150 次上限）| "none"（没反应）
 export const job = (id, extra = {}) => ({
@@ -40,8 +42,12 @@ function tabsHtml(tabs) {
   const boxes = Object.entries(FILTER_OPTIONS).map(([label, options]) => `<div class="condition-filter-select">
     <div class="current-select"><span class="placeholder-text">${label}</span></div>
     <div class="filter-select-dropdown"><ul>${options.map((o) => `<li>${esc(o)}</li>`).join("")}</ul></div></div>`).join("");
+  const industry = `<div class="condition-industry-select"><div class="current-select"><span class="placeholder-text">公司行业</span></div>
+    <div class="filter-select-dropdown"><ul>${INDUSTRY_GROUPS.map(([label, names]) => `<li class="clearfix"><span class="label">${esc(label)}</span>
+    <div class="select-list">${names.map((n) => `<a href="javascript:;" class="">${esc(n)}</a>`).join("")}</div></li>`).join("")}</ul></div></div>`;
   return `<div class="c-expect-select"><a href="javascript:;" class="synthesis active">推荐</a>
-    <div class="expect-list">${items}</div></div><div class="filter-condition">${boxes}</div>`;
+    <div class="expect-list">${items}</div><a href="javascript:;" class="add-expect-btn">添加求职期望</a></div>
+    <div class="filter-condition">${boxes}${industry}</div>`;
 }
 
 // session：预先放进 sessionStorage 的内容（模拟投递中自动刷新后的页面）
@@ -121,17 +127,36 @@ export async function openFakeBoss({ jobs, filteredJobs = null, tabs = null, sto
   // 栏目：点了换列表；筛选：求职类型单选，其余多选，点“不限”清空。记下当前选中的筛选条件
   const visitedTabs = ["推荐"];
   const filterHistory = [];
+  const industryHistory = [];
   if (tabs) {
     const list = doc.querySelector(".job-list");
     const tabEls = [doc.querySelector(".synthesis"), ...doc.querySelectorAll(".expect-item")];
     const tabJobs = [jobs, ...tabs.map((t) => t.jobs)];
     const anyFilter = () => doc.querySelector(".condition-filter-select li.active") !== null;
-    const render = (list_) => w.setTimeout(() => { list.innerHTML = list_().map(cardHtml).join(""); bindCards(); }, 60);
-    const recommendJobs = () => (anyFilter() && filteredJobs ? filteredJobs : jobs);
+    const industries = () => [...doc.querySelectorAll(".condition-industry-select a.active")].map((a) => a.textContent.trim());
+    // 当前栏目的岗位，再按选中的行业筛
+    const currentJobs = () => {
+      const i = tabEls.findIndex((el) => el.classList.contains("active"));
+      const base = i > 0 ? tabJobs[i] : anyFilter() && filteredJobs ? filteredJobs : jobs;
+      const picked = industries();
+      return picked.length ? base.filter((j) => picked.includes(j.industry)) : base;
+    };
+    const render = () => w.setTimeout(() => { list.innerHTML = currentJobs().map(cardHtml).join(""); bindCards(); }, 60);
     tabEls.forEach((el, i) => el.addEventListener("click", () => {
       tabEls.forEach((other) => other.classList.toggle("active", other === el));
       visitedTabs.push(i ? tabs[i - 1].name : "推荐");
-      render(() => (i ? tabJobs[i] : recommendJobs()));
+      render();
+    }));
+    // 公司行业：多选，最多 3 个（第 4 个点了没反应，BOSS 会提示“最多选择3个哦~”），再点取消
+    doc.querySelectorAll(".condition-industry-select .select-list a").forEach((a) => a.addEventListener("click", () => {
+      const name = a.textContent.trim();
+      if (!a.classList.contains("active") && industries().length >= 3) {
+        industryHistory.push(`拒绝:${name}`);
+        return;
+      }
+      a.classList.toggle("active");
+      industryHistory.push(name);
+      render();
     }));
     doc.querySelectorAll(".condition-filter-select").forEach((box) => {
       const label = box.querySelector(".placeholder-text").textContent;
@@ -143,7 +168,7 @@ export async function openFakeBoss({ jobs, filteredJobs = null, tabs = null, sto
         else li.classList.toggle("active");
         filterHistory.push(`${label}:${text}`);
         // 和 BOSS 一样：改了筛选，列表整个重新加载（筛选会带到其他栏目，这里只模拟「推荐」）
-        if (tabEls[0].classList.contains("active")) render(recommendJobs);
+        if (tabEls[0].classList.contains("active")) render();
       }));
     });
   }
@@ -191,7 +216,8 @@ export async function openFakeBoss({ jobs, filteredJobs = null, tabs = null, sto
   await waitUntil(() => startButton());
 
   return {
-    window: w, document: doc, errors, chats, logs, visitedTabs, filterHistory, filters,
+    window: w, document: doc, errors, chats, logs, visitedTabs, filterHistory, filters, industryHistory,
+    industries: () => [...doc.querySelectorAll(".condition-industry-select a.active")].map((a) => a.textContent.trim()),
     // 点“开始投递”并等这次投递结束。没设规则时会先弹确认框，默认点“仍然开始”；
     // noRulesChoice 传按钮文字可以点别的，传 null 表示不处理（留着确认框）。
     async run({ noRulesChoice = "仍然开始" } = {}) {

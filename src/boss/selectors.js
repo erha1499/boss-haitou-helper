@@ -23,6 +23,9 @@ export const BOSS = {
   filterOption: ".filter-select-dropdown li",
   filterBoxes: { jobType: "求职类型", experience: "工作经验" },
   filterAnyText: "不限",
+  // 「公司行业」筛选：选项是 a，选中的带 active，一次最多选 3 个，再点一次取消（没有“不限”）
+  industryBox: ".condition-industry-select",
+  industryOption: ".select-list a",
   // 没有求职意向时提示用户去这里添加
   expectSettingsUrl: "https://www.zhipin.com/web/geek/resume?editItem=userinfo",
 

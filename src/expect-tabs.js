@@ -46,6 +46,18 @@ async function waitListStable(isCurrent, quietMs = 1500, timeoutMs = 8000) {
   }
 }
 
+// 依次点这些选项，每次之间停一下；中途停了就不点了。返回是否点过
+async function clickAll(options, isCurrent) {
+  let clicked = false;
+  for (const option of options.filter(Boolean)) {
+    if (!isCurrent()) break;
+    option.click();
+    clicked = true;
+    await delay(CONFIG.BASIC_INTERVAL);
+  }
+  return clicked;
+}
+
 export const ExpectTabs = {
   // 栏目：[{ name, el, recommend }]，第一个是「推荐」；页面上没有栏目栏时返回空数组
   list() {
@@ -105,13 +117,36 @@ export const ExpectTabs = {
       if (!target.length) clicks = [find(BOSS.filterAnyText)];
       else if (key === "jobType") clicks = [find(target[0])];
       else clicks = [...target.filter((t) => !current.includes(t)), ...current.filter((t) => !target.includes(t))].map(find);
-      for (const option of clicks.filter(Boolean)) {
-        if (!isCurrent()) return clicked;
-        option.click();
-        clicked = true;
-        await delay(CONFIG.BASIC_INTERVAL);
-      }
+      if (await clickAll(clicks, isCurrent)) clicked = true;
+      if (!isCurrent()) return clicked;
     }
+    if (clicked) await waitListChange(before, isCurrent, 6000, true);
+    return clicked;
+  },
+
+  _industryOptions() {
+    const box = document.querySelector(BOSS.industryBox);
+    return box ? Array.from(box.querySelectorAll(BOSS.industryOption)) : null;
+  },
+
+  // 当前选中的公司行业；页面上没有这个筛选时返回 null
+  readIndustries() {
+    const options = this._industryOptions();
+    return options && options.filter(isActive).map(textOf);
+  },
+
+  // 把公司行业设成 wanted（最多 3 个，空数组表示不限）。先取消多余的再选新的，免得超过 3 个被 BOSS 拒绝。
+  // 返回是否改过
+  async applyIndustries(wanted, isCurrent) {
+    const options = this._industryOptions();
+    if (!options) return false;
+    const before = listSignature();
+    const current = options.filter(isActive);
+    const clicks = [
+      ...current.filter((option) => !wanted.includes(textOf(option))),
+      ...options.filter((option) => !isActive(option) && wanted.includes(textOf(option))),
+    ];
+    const clicked = await clickAll(clicks, isCurrent);
     if (clicked) await waitListChange(before, isCurrent, 6000, true);
     return clicked;
   },

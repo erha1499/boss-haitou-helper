@@ -1,4 +1,5 @@
 import { CONFIG, getStoredJSON } from "./config.js";
+import { normalizeIndustries } from "./rules/industries.js";
 import { normalizeJobTypeFilter } from "./rules/job-type.js";
 import { normalizeSalaryFilter } from "./rules/salary.js";
 
@@ -113,3 +114,5 @@ export function saveLogEntries() {
 }
 
 state.jobTypeFilter = normalizeJobTypeFilter(getStoredJSON("zdlJobTypeFilter", null));
+// 想投的公司行业（BOSS 的行业筛选），投递时每个栏目按这些行业 3 个一批筛选
+state.industries = normalizeIndustries(getStoredJSON("zdlIndustries", []));
